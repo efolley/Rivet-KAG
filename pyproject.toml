@@ -1,0 +1,43 @@
+[project]
+name = "rivet-kag"
+version = "0.1.0"
+description = "Knowledge-Augmented Generation over Milvus + Neo4j"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11"]
+
+[project.optional-dependencies]
+# Enable as each integration lands:
+# rag = ["langchain", "deepagents", "llama-index", "pymilvus", "neo4j", "langfuse"]
+# platform = ["sqlalchemy[asyncio]", "asyncpg", "alembic", "redis", "aiokafka", "pyjwt", "passlib[argon2]"]
+# eval = ["deepeval"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 120
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
