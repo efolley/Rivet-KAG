@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://rivet:rivet@localhost:5432/rivet"
     redis_url: str = "redis://localhost:6379/0"
     kafka_bootstrap_servers: str = "localhost:9092"
-    milvus_uri: str = "http://localhost:19530"
+    milvus_uri: str = "./data/milvus.db"  # local Milvus Lite file; or http://host:19530 for a server
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "rivet-dev-password"

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rivet KAG source data</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1a1d21; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb;
+          --Employee:#2563eb; --Team:#7c3aed; --Project:#059669; --Tool:#d97706; --Document:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#181b21; --text:#e5e7eb; --muted:#9ca3af; --line:#2a2f38; --accent:#60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { margin:0 0 4px; font-size:1.4rem; } h2 { font-size:1.05rem; margin:0 0 8px; }
+  .sub { color:var(--muted); margin:0 0 16px; }
+  nav { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
+  nav button { border:1px solid var(--line); background:var(--card); color:var(--text); padding:6px 14px; border-radius:8px; cursor:pointer; font:inherit; }
+  nav button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  .stat b { font-size:1.6rem; display:block; }
+  .muted { color:var(--muted); }
+  .split { display:grid; grid-template-columns:260px 1fr; gap:12px; }
+  @media (max-width:720px) { .split { grid-template-columns:1fr; } }
+  .list button { display:block; width:100%; text-align:left; border:0; background:none; color:var(--text); padding:6px 8px; border-radius:6px; cursor:pointer; font:inherit; }
+  .list button.on { background:var(--accent); color:#fff; }
+  .list small { display:block; color:inherit; opacity:.7; }
+  .chunk { border-left:3px solid var(--accent); padding:4px 12px; margin:10px 0; background:color-mix(in srgb,var(--accent) 6%,transparent); }
+  .chunk .meta { font-size:.75rem; color:var(--muted); margin-bottom:4px; }
+  .chunk p { margin:4px 0; white-space:pre-wrap; }
+  table { border-collapse:collapse; width:100%; } th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .tablewrap { overflow-x:auto; }
+  #graph { width:100%; height:520px; background:var(--card); border:1px solid var(--line); border-radius:10px; }
+  .legend { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .pill { border:1px solid var(--line); border-radius:999px; padding:2px 10px; cursor:pointer; background:var(--card); color:var(--text); font:inherit; font-size:.8rem; }
+  .pill i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
+  .pill.off { opacity:.35; }
+  code { background:color-mix(in srgb,var(--muted) 18%,transparent); padding:1px 5px; border-radius:4px; }
+  .edge { stroke:var(--muted); stroke-opacity:.4; } .edge.hl { stroke:var(--accent); stroke-opacity:1; stroke-width:2; }
+  .node { cursor:pointer; } .node text { fill:var(--text); font-size:10px; pointer-events:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Rivet KAG source data</h1>
+  <p class="sub">Synthetic sample data for a fictional company, "Northwind Analytics". Fully generated, contains no real people.</p>
+  <nav id="tabs"></nav>
+  <div id="view"></div>
+</div>
+<script>
+const DATA = __DATA__;
+const COLORS = {Employee:"var(--Employee)",Team:"var(--Team)",Project:"var(--Project)",Tool:"var(--Tool)",Document:"var(--Document)"};
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const count = (arr, key) => arr.reduce((m, x) => (m[x[key]] = (m[x[key]] || 0) + 1, m), {});
+
+// A chunk is one "## " section, mirroring the heading-based chunking planned for ingestion.
+function chunkDoc(text) {
+  const chunks = []; let title = "", body = [];
+  const flush = () => { const t = body.join("\n").trim(); if (t) chunks.push({ heading: title, text: t }); body = []; };
+  for (const line of text.split("\n")) {
+    if (line.startsWith("## ")) { flush(); title = line.slice(3); }
+    else if (line.startsWith("# ")) { title = line.slice(2); }
+    else body.push(line);
+  }
+  flush();
+  return chunks;
+}
+const words = (t) => t.trim().split(/\s+/).length;
+const allChunks = DATA.docs.flatMap((d) => chunkDoc(d.text));
+
+const tabs = {
+  overview() {
+    const nc = count(DATA.nodes, "label"), ec = count(DATA.edges, "type");
+    return `
+    <div class="grid">
+      <div class="card stat"><b>${DATA.docs.length + 1}</b>source files (${DATA.docs.length} markdown, 1 CSV)</div>
+      <div class="card stat"><b>${allChunks.length + DATA.faq.length}</b>vector chunks (approx.)</div>
+      <div class="card stat"><b>${DATA.nodes.length}</b>graph nodes</div>
+      <div class="card stat"><b>${DATA.edges.length}</b>graph relationships</div>
+    </div>
+    <div class="card"><h2>Vector data &rarr; Milvus</h2>
+      <p>Unstructured text: policies, runbooks and handbooks as Markdown, plus a support FAQ as CSV. Files are split into chunks, embedded and searched by meaning. Best for questions like <em>"When does a new hire get VPN access?"</em></p>
+      <p class="muted">Folder: <code>source_data/vector_data/</code></p></div>
+    <div class="card"><h2>Graph data &rarr; Neo4j</h2>
+      <p>Structured relationships between people, teams, projects, tools and documents: ${Object.entries(nc).map(([k, v]) => `${v} ${k}`).join(", ")}. Relationship types: ${Object.entries(ec).map(([k, v]) => `<code>${k}</code> (${v})`).join(", ")}. Best for questions like <em>"Who works on Beacon and which tools does it use?"</em></p>
+      <p class="muted">Folder: <code>source_data/graph_data/</code> &middot; load with <code>load.cypher</code></p></div>
+    <div class="card"><h2>How the two connect</h2>
+      <p>Each vector document is also a <code>Document</code> node in the graph, owned by a team and linked to the projects and tools it describes. A hybrid question such as <em>"What does the VPN policy say, and who owns it?"</em> needs both: the policy text from the vector store and the owner from the graph.</p></div>`;
+  },
+  vector() {
+    setTimeout(() => selectDoc(0));
+    return `<div class="split"><div class="card list" id="doclist">
+      ${DATA.docs.map((d, i) => `<button data-i="${i}">${esc(d.filename)}<small>${chunkDoc(d.text).length} chunks &middot; ${words(d.text)} words</small></button>`).join("")}
+      <button data-i="faq">support_faq.csv<small>${DATA.faq.length} rows</small></button></div>
+      <div class="card" id="docview"></div></div>`;
+  },
+  graph() {
+    setTimeout(initGraph);
+    return `<div class="legend" id="legend"></div>
+      <svg id="graph"></svg>
+      <div class="card" id="nodeinfo" style="margin-top:12px"><span class="muted">Click a node to see its properties and connections.</span></div>`;
+  },
+  tables() {
+    const rows = (arr) => `<div class="tablewrap"><table><tr>${Object.keys(arr[0]).map((k) => `<th>${esc(k)}</th>`).join("")}</tr>${arr.map((r) => `<tr>${Object.values(r).map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`).join("")}</table></div>`;
+    const byLabel = (l) => DATA.nodes.filter((n) => n.label === l).map((n) => n.props);
+    return ["Employee", "Team", "Project", "Tool", "Document"].map((l) => `<div class="card"><h2>${l} nodes</h2>${rows(byLabel(l))}</div>`).join("") +
+      `<div class="card"><h2>Relationships</h2>${rows(DATA.edges)}</div>`;
+  },
+};
+const titles = { overview: "Overview", vector: "Vector data", graph: "Graph data", tables: "Graph tables" };
+
+function selectDoc(i) {
+  document.querySelectorAll("#doclist button").forEach((b) => b.classList.toggle("on", b.dataset.i == i));
+  const view = $("#docview");
+  if (!view) return;
+  if (i === "faq") {
+    view.innerHTML = `<h2>support_faq.csv</h2><p class="muted">Each row becomes one chunk: question and answer together.</p>` +
+      DATA.faq.map((r, n) => `<div class="chunk"><div class="meta">row ${n + 1} &middot; ${esc(r.category)}</div><p><b>${esc(r.question)}</b>\n${esc(r.answer)}</p></div>`).join("");
+    return;
+  }
+  const d = DATA.docs[i];
+  view.innerHTML = `<h2>${esc(d.filename)}</h2><p class="muted">Split by <code>##</code> headings, one chunk per section.</p>` +
+    chunkDoc(d.text).map((c, n) => `<div class="chunk"><div class="meta">chunk ${n + 1} &middot; ${words(c.text)} words &middot; ${esc(c.heading)}</div><p>${esc(c.text)}</p></div>`).join("");
+}
+
+function initGraph() {
+  const svg = $("#graph"), W = svg.clientWidth || 1000, H = 520;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const hidden = new Set();
+  const nodes = DATA.nodes.map((n, i) => ({ ...n, x: W / 2 + 200 * Math.cos(i), y: H / 2 + 200 * Math.sin(i), vx: 0, vy: 0 }));
+  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const edges = DATA.edges.map((e) => ({ ...e, s: byId[e.source], t: byId[e.target] }));
+
+  for (let it = 0; it < 400; it++) {
+    const cool = 1 - it / 400;
+    for (const a of nodes) for (const b of nodes) {
+      if (a === b) continue;
+      let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01, f = 6000 / d2;
+      const d = Math.sqrt(d2); a.vx += (dx / d) * f; a.vy += (dy / d) * f;
+    }
+    for (const e of edges) {
+      const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 120) * 0.02;
+      e.s.vx += (dx / d) * f; e.s.vy += (dy / d) * f; e.t.vx -= (dx / d) * f; e.t.vy -= (dy / d) * f;
+    }
+    for (const n of nodes) {
+      n.vx += (W / 2 - n.x) * 0.002; n.vy += (H / 2 - n.y) * 0.002;
+      n.x = Math.min(W - 110, Math.max(20, n.x + n.vx * 0.5 * cool)); n.y = Math.min(H - 20, Math.max(20, n.y + n.vy * 0.5 * cool));
+      n.vx *= 0.8; n.vy *= 0.8;
+    }
+  }
+
+  function draw(sel) {
+    const linked = new Set(sel ? edges.filter((e) => e.source === sel || e.target === sel).flatMap((e) => [e.source, e.target]) : []);
+    svg.innerHTML = edges.filter((e) => !hidden.has(e.s.label) && !hidden.has(e.t.label)).map((e) =>
+      `<line class="edge${sel && (e.source === sel || e.target === sel) ? " hl" : ""}" x1="${e.s.x}" y1="${e.s.y}" x2="${e.t.x}" y2="${e.t.y}"><title>${e.type}</title></line>`).join("") +
+      nodes.filter((n) => !hidden.has(n.label)).map((n) =>
+        `<g class="node" data-id="${n.id}" opacity="${sel && !linked.has(n.id) && n.id !== sel ? 0.25 : 1}"><circle cx="${n.x}" cy="${n.y}" r="${n.id === sel ? 10 : 7}" fill="${COLORS[n.label]}"/><text x="${n.x + 10}" y="${n.y + 3}">${esc(n.name)}</text><title>${n.label}: ${esc(n.name)}</title></g>`).join("");
+    svg.querySelectorAll(".node").forEach((g) => g.addEventListener("click", () => { show(g.dataset.id); draw(g.dataset.id); }));
+  }
+  function show(id) {
+    const n = byId[id];
+    const links = edges.filter((e) => e.source === id || e.target === id).map((e) =>
+      e.source === id ? `<code>${e.type}</code> &rarr; ${esc(e.t.name)}${e.role ? ` (${esc(e.role)})` : ""}` : `${esc(e.s.name)} &rarr; <code>${e.type}</code>${e.role ? ` (${esc(e.role)})` : ""}`);
+    $("#nodeinfo").innerHTML = `<h2>${esc(n.name)} <small class="muted">${n.label}</small></h2>
+      <div class="tablewrap"><table>${Object.entries(n.props).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table></div>
+      <p><b>Connections (${links.length})</b></p><div>${links.map((l) => `<div>${l}</div>`).join("")}</div>`;
+  }
+  $("#legend").innerHTML = Object.keys(COLORS).map((l) => `<button class="pill" data-l="${l}"><i style="background:${COLORS[l]}"></i>${l}</button>`).join("");
+  $("#legend").querySelectorAll(".pill").forEach((b) => b.addEventListener("click", () => {
+    hidden.has(b.dataset.l) ? hidden.delete(b.dataset.l) : hidden.add(b.dataset.l);
+    b.classList.toggle("off"); draw();
+  }));
+  draw();
+}
+
+function go(name) {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.t === name));
+  $("#view").innerHTML = tabs[name]();
+  if (name === "vector") $("#doclist").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) selectDoc(b.dataset.i === "faq" ? "faq" : +b.dataset.i); });
+  location.hash = name;
+}
+$("#tabs").innerHTML = Object.keys(tabs).map((k) => `<button data-t="${k}">${titles[k]}</button>`).join("");
+$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) go(b.dataset.t); });
+go(tabs[location.hash.slice(1)] ? location.hash.slice(1) : "overview");
+</script>
+</body>
+</html>

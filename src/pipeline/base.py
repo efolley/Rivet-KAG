@@ -1,4 +1,5 @@
 """Interfaces for each pipeline stage. Real implementations (LangChain, Milvus, Neo4j, DeepAgents) plug in here."""
+
 from dataclasses import dataclass, field
 from typing import Protocol
 

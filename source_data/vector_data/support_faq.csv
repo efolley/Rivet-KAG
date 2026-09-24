@@ -1,0 +1,11 @@
+category,question,answer
+Account,How do I reset my password?,Use the Forgot password link on the sign-in page. A reset email arrives within 5 minutes.
+Account,How do I enable multi-factor authentication?,Open Settings then Security and choose an authenticator app. Admins must use a hardware key.
+Dashboard,What does the Compass dashboard show?,Compass shows customer usage trends and retention. Data refreshes every hour.
+Dashboard,Why is my dashboard data delayed?,Data is refreshed hourly from the curated tables. Delays over 2 hours are reported to the Data Platform team.
+Dashboard,Can I export a chart?,Yes. Use the menu on any chart to export it as PNG or CSV.
+Billing,When am I invoiced?,Invoices are sent on the first business day of each month.
+Billing,How do I change my plan?,Workspace admins can change plans under Settings then Billing. Changes apply from the next invoice.
+Privacy,Where is my data stored?,Customer data is stored in EU regions. Backups are kept for 30 days.
+Privacy,How do I request deletion of my data?,Email the support team from the account address. Deletion completes within 30 days.
+Support,What are the support hours?,Support answers Monday to Friday 08:00 to 18:00 CET. SEV1 issues are handled around the clock.

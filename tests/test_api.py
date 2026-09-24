@@ -34,3 +34,15 @@ def test_guardrail_blocks_prompt_injection() -> None:
 @pytest.mark.parametrize("path", ["/api/auth/login", "/api/files"])
 def test_unbuilt_features_return_501(path: str) -> None:
     assert client.post(path).status_code == 501
+
+
+def test_data_overview_reports_unavailable_databases_instead_of_failing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom() -> None:
+        raise ConnectionError("down")
+
+    monkeypatch.setattr("src.api.routes.data.milvus_session", boom)
+    monkeypatch.setattr("src.api.routes.data.get_neo4j", boom)
+    body = client.get("/api/data/overview").json()
+    assert body["vector"]["available"] is False
+    assert body["graph"]["available"] is False
+    assert client.get("/api/data/graph").status_code == 503

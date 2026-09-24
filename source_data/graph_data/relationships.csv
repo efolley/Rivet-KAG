@@ -1,0 +1,72 @@
+type,start_label,start_id,end_label,end_id,role
+MEMBER_OF,Employee,E01,Team,TM1,
+MEMBER_OF,Employee,E02,Team,TM1,
+MEMBER_OF,Employee,E03,Team,TM1,
+MEMBER_OF,Employee,E04,Team,TM2,
+MEMBER_OF,Employee,E05,Team,TM2,
+MEMBER_OF,Employee,E06,Team,TM2,
+MEMBER_OF,Employee,E07,Team,TM3,
+MEMBER_OF,Employee,E08,Team,TM3,
+MEMBER_OF,Employee,E09,Team,TM4,
+MEMBER_OF,Employee,E10,Team,TM4,
+MEMBER_OF,Employee,E11,Team,TM5,
+MEMBER_OF,Employee,E12,Team,TM5,
+LEADS,Employee,E01,Team,TM1,
+LEADS,Employee,E04,Team,TM2,
+LEADS,Employee,E07,Team,TM3,
+LEADS,Employee,E09,Team,TM4,
+LEADS,Employee,E11,Team,TM5,
+REPORTS_TO,Employee,E02,Employee,E01,
+REPORTS_TO,Employee,E03,Employee,E01,
+REPORTS_TO,Employee,E05,Employee,E04,
+REPORTS_TO,Employee,E06,Employee,E04,
+REPORTS_TO,Employee,E08,Employee,E07,
+REPORTS_TO,Employee,E10,Employee,E09,
+REPORTS_TO,Employee,E12,Employee,E11,
+OWNS,Team,TM1,Project,PR1,
+OWNS,Team,TM2,Project,PR2,
+OWNS,Team,TM3,Project,PR3,
+OWNS,Team,TM4,Project,PR4,
+OWNS,Team,TM5,Project,PR5,
+WORKS_ON,Employee,E01,Project,PR1,lead
+WORKS_ON,Employee,E02,Project,PR1,data engineer
+WORKS_ON,Employee,E03,Project,PR1,data engineer
+WORKS_ON,Employee,E10,Project,PR1,access review
+WORKS_ON,Employee,E04,Project,PR2,lead
+WORKS_ON,Employee,E05,Project,PR2,ml engineer
+WORKS_ON,Employee,E06,Project,PR2,ml engineer
+WORKS_ON,Employee,E02,Project,PR2,feature pipelines
+WORKS_ON,Employee,E07,Project,PR3,lead
+WORKS_ON,Employee,E08,Project,PR3,designer
+WORKS_ON,Employee,E03,Project,PR3,data feeds
+WORKS_ON,Employee,E09,Project,PR4,lead
+WORKS_ON,Employee,E10,Project,PR4,security engineer
+WORKS_ON,Employee,E11,Project,PR5,lead
+WORKS_ON,Employee,E12,Project,PR5,people partner
+USES,Project,PR1,Tool,TL1,
+USES,Project,PR1,Tool,TL2,
+USES,Project,PR2,Tool,TL1,
+USES,Project,PR2,Tool,TL2,
+USES,Project,PR2,Tool,TL5,
+USES,Project,PR3,Tool,TL3,
+USES,Project,PR4,Tool,TL6,
+USES,Project,PR4,Tool,TL4,
+USES,Project,PR5,Tool,TL4,
+OWNS_DOC,Team,TM5,Document,DC1,
+OWNS_DOC,Team,TM4,Document,DC2,
+OWNS_DOC,Team,TM5,Document,DC3,
+OWNS_DOC,Team,TM4,Document,DC4,
+OWNS_DOC,Team,TM1,Document,DC5,
+OWNS_DOC,Team,TM2,Document,DC6,
+OWNS_DOC,Team,TM3,Document,DC7,
+DESCRIBES,Document,DC1,Project,PR5,
+DESCRIBES,Document,DC1,Tool,TL4,
+DESCRIBES,Document,DC2,Tool,TL4,
+DESCRIBES,Document,DC4,Tool,TL6,
+DESCRIBES,Document,DC4,Tool,TL3,
+DESCRIBES,Document,DC5,Project,PR1,
+DESCRIBES,Document,DC5,Tool,TL1,
+DESCRIBES,Document,DC5,Tool,TL2,
+DESCRIBES,Document,DC6,Project,PR2,
+DESCRIBES,Document,DC6,Tool,TL5,
+DESCRIBES,Document,DC7,Project,PR3,

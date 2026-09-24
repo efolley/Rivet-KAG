@@ -8,14 +8,21 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "pydantic>=2.7",
   "pydantic-settings>=2.4",
+  "pymilvus>=2.4",
+  "milvus-lite>=2.4; sys_platform != 'win32'",
+  "neo4j>=5.20",
 ]
 
 [dependency-groups]
+ingest = ["fastembed>=0.4"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.uv]
+default-groups = ["dev", "ingest"]
 
 [project.optional-dependencies]
 # Enable as each integration lands:
-# rag = ["langchain", "deepagents", "llama-index", "pymilvus", "neo4j", "langfuse"]
+# rag = ["langchain", "deepagents", "llama-index", "langfuse"]
 # platform = ["sqlalchemy[asyncio]", "asyncpg", "alembic", "redis", "aiokafka", "pyjwt", "passlib[argon2]"]
 # eval = ["deepeval"]
 
@@ -25,18 +32,23 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "utils*"]
 
 [tool.ruff]
 line-length = 120
 src = ["."]
+extend-exclude = []
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
 [tool.mypy]
 strict = true
-files = ["src"]
+files = ["src", "utils"]
+
+[[tool.mypy.overrides]]
+module = ["pymilvus.*", "fastembed.*", "milvus_lite.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

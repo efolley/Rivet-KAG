@@ -10,3 +10,5 @@ dist/
 .pytest_cache/
 .ruff_cache/
 *.tsbuildinfo
+data/*.db
+data/.*.lock

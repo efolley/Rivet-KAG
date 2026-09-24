@@ -1,0 +1,6 @@
+id,name,description,status,started
+PR1,Atlas,Data lakehouse migration,active,2026-01-12
+PR2,Beacon,Recommendation engine,active,2025-10-06
+PR3,Compass,Customer analytics dashboard,active,2026-02-02
+PR4,Sentinel,Security monitoring rollout,planning,2026-08-01
+PR5,Harbor,Onboarding revamp,completed,2025-04-14

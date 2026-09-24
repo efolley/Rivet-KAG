@@ -1,0 +1,7 @@
+id,name,category
+TL1,Kafka,Streaming
+TL2,Airflow,Orchestration
+TL3,Grafana,Dashboards
+TL4,Okta,Identity and SSO
+TL5,GitHub,Source control
+TL6,Wazuh,Security monitoring

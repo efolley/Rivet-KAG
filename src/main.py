@@ -11,10 +11,8 @@ from src.core.logging import setup_logging
 def create_app() -> FastAPI:
     settings = get_settings()
     setup_logging(settings.log_level)
-    app = FastAPI(title="rivet-kag", version=__version__)
-    app.add_middleware(
-        CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"]
-    )
+    app = FastAPI(title="Rivet KAG", version=__version__)
+    app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
     register_error_handlers(app)
     app.include_router(api_router)
     return app

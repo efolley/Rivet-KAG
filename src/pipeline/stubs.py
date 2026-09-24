@@ -1,4 +1,5 @@
 """Stub stage implementations so the API works end-to-end before real integrations land."""
+
 import asyncio
 
 from src.pipeline.base import Plan

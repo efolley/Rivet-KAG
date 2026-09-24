@@ -1,4 +1,13 @@
-.PHONY: install dev-backend dev-frontend lint test up down
+.PHONY: neo4j ingest dev dev-backend dev-frontend install lint test
+
+neo4j:
+	brew services start neo4j
+
+ingest:
+	uv run python -m utils.upload all
+
+dev:
+	$(MAKE) -j2 dev-backend dev-frontend
 
 install:
 	uv sync
@@ -17,9 +26,3 @@ lint:
 
 test:
 	uv run pytest
-
-up:
-	docker compose up --build
-
-down:
-	docker compose down
