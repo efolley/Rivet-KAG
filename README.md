@@ -1,4 +1,3 @@
-
 # Rivet KAG | Agent that talks to your vector and graph data
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
@@ -85,7 +84,7 @@ make dev                                            # API http://localhost:8000 
 
 Connection settings live in `.env` (copy `.env.example`); the defaults match the commands above. `make test lint` runs the checks.
 
-API: `POST /api/chat` with `{"session_id": "...", "message": "..."}` returns `{answer, citations[], trace[]}`. `/api/data/*` feeds the Data Management tab. `/api/auth/*` and `/api/files` return 501 until implemented.
+API: `POST /api/chat` with `{"session_id": "...", "message": "..."}` returns `{answer, citations[], trace[]}`. `/api/data/*` feeds the Data Management tab. `POST /api/files` ingests an uploaded file (see [Uploading files](#uploading-files)). `/api/auth/*` returns 501 until implemented.
 
 ## Sample data
 
@@ -99,7 +98,18 @@ make ingest   # embed and load source_data/ into both (first run downloads a ~13
 
 Milvus Lite keeps its data in `data/milvus.db`. The API and the upload CLI open it one operation at a time, so you can run `make ingest` while `make dev` is running.
 
-`utils/` also handles manual uploads: `uv run python -m utils.upload --help`. For example `vector files my_notes.md`, `vector text "..." --source note`, `graph node Employee id=E13 name="Ada"`, `graph rel MEMBER_OF Employee:E13 Team:TM1`. Everything stored is visible in the **Data Management** tab of the UI.
+`utils/` also handles manual uploads: `uv run python -m utils.upload --help`. For example `vector files my_notes.md report.xlsx manual.pdf`, `vector text "..." --source note`, `graph node Employee id=E13 name="Ada"`, `graph rel MEMBER_OF Employee:E13 Team:TM1`. Everything stored is visible in the **Data Management** tab of the UI.
+
+### Uploading files
+
+`POST /api/files` (multipart, field name `file`) accepts `.md`, `.csv`, `.xlsx`/`.xls`, `.pdf` and `.txt`, chunks it with [LlamaIndex](https://docs.llamaindex.ai/) readers, embeds the chunks and upserts them into Milvus — the same collection `make ingest` and the Data Management tab use:
+
+```bash
+curl -F "file=@notes.md" http://localhost:8000/api/files
+# {"filename":"notes.md","doc_type":"md","chunks_upserted":3}
+```
+
+Markdown is split one chunk per `##` heading; CSV and Excel one chunk per row (via LlamaIndex's `PagedCSVReader` / `PandasExcelReader`); PDF one chunk per page (via `PDFReader`). Unsupported types get a 400, and a file with no extractable text gets a 422.
 
 ## Project structure
 
@@ -108,12 +118,13 @@ src/                     backend (FastAPI), imported as `src.*`
   main.py, config.py     app factory, env-based settings
   api/                   routes (health, chat, data, auth, files) and dependencies
   pipeline/              stage interfaces (base.py), orchestrator, stubs, factory
+  ingestion/             LlamaIndex loaders (md/csv/xlsx/pdf), embeddings, embed+upsert pipeline
   clients/               Milvus (Lite) session and Neo4j driver
   guardrails/            input checks (run before the pipeline)
   schemas/               Pydantic request/response models
   core/                  logging, error handling
-  db/ ingestion/ observability/   placeholders for Postgres, LlamaIndex, Langfuse
-utils/                   upload CLI: load data into Milvus and Neo4j
+  db/ observability/     placeholders for Postgres, Langfuse
+utils/                   CLI: bulk-load source_data/ and manual uploads into Milvus and Neo4j
 source_data/             sample data (vector_data/, graph_data/) and an HTML viewer
 tests/                   pytest suite
 frontend/src/            React UI (Chat, Data Management)
@@ -135,7 +146,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. To add a real Milvus re
 
 - [X] Create sample dataset for vector and graph DBs
 - [X] Milvus (Lite) + Neo4j running locally, sample data loaded by `utils/`
-- [ ] LlamaIndex ingestion (Excel, CSV, MD, PDF) and upload endpoint
+- [X] LlamaIndex ingestion (Excel, CSV, MD, PDF) and upload endpoint
 - [ ] Real vector retrieval (Milvus) and Cypher generation (Neo4j)
 - [ ] Request parser and router (LangChain)
 

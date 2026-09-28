@@ -2,7 +2,7 @@
 
 Examples (run from the repo root):
   uv run python -m utils.upload all                          # load everything in source_data/
-  uv run python -m utils.upload vector files docs/a.md notes.csv
+  uv run python -m utils.upload vector files docs/a.md notes.csv report.xlsx manual.pdf
   uv run python -m utils.upload vector text "Refunds take 5 days." --source refunds_note
   uv run python -m utils.upload graph csv source_data/graph_data
   uv run python -m utils.upload graph node Employee id=E13 name="Ada Lovelace" title=Engineer
@@ -14,7 +14,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from utils import milvus_loader, neo4j_loader
+from src import ingestion
+from utils import neo4j_loader
 
 SOURCE_DATA = Path(__file__).resolve().parent.parent / "source_data"
 
@@ -45,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("all", help="load source_data/ into both databases")
 
     vec = sub.add_parser("vector", help="Milvus").add_subparsers(dest="action", required=True)
-    files = vec.add_parser("files", help="embed and upsert .md/.csv/.txt files or folders")
+    files = vec.add_parser("files", help="embed and upsert .md/.csv/.xlsx/.pdf/.txt files or folders")
     files.add_argument("paths", nargs="+", type=Path)
     text = vec.add_parser("text", help="embed and upsert a piece of text")
     text.add_argument("text")
@@ -80,14 +81,14 @@ def main(argv: list[str] | None = None) -> None:
 def run(args: argparse.Namespace) -> None:
 
     if args.target == "all":
-        n = milvus_loader.load_paths([SOURCE_DATA / "vector_data"])
+        n = ingestion.ingest_paths([SOURCE_DATA / "vector_data"])
         nodes, rels = neo4j_loader.load_dir(SOURCE_DATA / "graph_data")
         print(f"Milvus: upserted {n} chunks. Neo4j: merged {nodes} nodes, {rels} relationships.")
     elif args.target == "vector":
         if args.action == "files":
-            print(f"Upserted {milvus_loader.load_paths(args.paths)} chunks into Milvus.")
+            print(f"Upserted {ingestion.ingest_paths(args.paths)} chunks into Milvus.")
         else:
-            print(f"Upserted {milvus_loader.load_text(args.text, args.source)} chunk into Milvus.")
+            print(f"Upserted {ingestion.ingest_text(args.text, args.source)} chunk into Milvus.")
     elif args.target == "graph":
         if args.action == "csv":
             nodes, rels = neo4j_loader.load_dir(args.directory)
@@ -102,7 +103,7 @@ def run(args: argparse.Namespace) -> None:
         if not args.yes:
             sys.exit("Refusing to delete without --yes.")
         if args.which in ("vector", "all"):
-            milvus_loader.clear()
+            ingestion.clear_vector_store()
         if args.which in ("graph", "all"):
             neo4j_loader.clear()
         print("Cleared.")

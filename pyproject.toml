@@ -11,6 +11,10 @@ dependencies = [
   "pymilvus>=2.4",
   "milvus-lite>=2.4; sys_platform != 'win32'",
   "neo4j>=5.20",
+  "llama-index-core>=0.11",
+  "llama-index-readers-file>=0.2",
+  "openpyxl>=3.1",
+  "python-multipart>=0.0.9",
 ]
 
 [dependency-groups]
@@ -22,7 +26,7 @@ default-groups = ["dev", "ingest"]
 
 [project.optional-dependencies]
 # Enable as each integration lands:
-# rag = ["langchain", "deepagents", "llama-index", "langfuse"]
+# rag = ["langchain", "deepagents", "langfuse"]
 # platform = ["sqlalchemy[asyncio]", "asyncpg", "alembic", "redis", "aiokafka", "pyjwt", "passlib[argon2]"]
 # eval = ["deepeval"]
 
@@ -47,7 +51,7 @@ strict = true
 files = ["src", "utils"]
 
 [[tool.mypy.overrides]]
-module = ["pymilvus.*", "fastembed.*", "milvus_lite.*"]
+module = ["pymilvus.*", "fastembed.*", "milvus_lite.*", "llama_index.readers.file.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -31,9 +31,8 @@ def test_guardrail_blocks_prompt_injection() -> None:
     assert r.json()["error"]["code"] == "guardrail_violation"
 
 
-@pytest.mark.parametrize("path", ["/api/auth/login", "/api/files"])
-def test_unbuilt_features_return_501(path: str) -> None:
-    assert client.post(path).status_code == 501
+def test_unbuilt_feature_returns_501() -> None:
+    assert client.post("/api/auth/login").status_code == 501
 
 
 def test_data_overview_reports_unavailable_databases_instead_of_failing(monkeypatch: pytest.MonkeyPatch) -> None:
