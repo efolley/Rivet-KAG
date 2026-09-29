@@ -1,4 +1,4 @@
-.PHONY: neo4j ingest eval dev dev-backend dev-frontend install lint test
+.PHONY: neo4j ingest eval judge dev dev-backend dev-frontend install lint test
 
 neo4j:
 	brew services start neo4j
@@ -8,6 +8,9 @@ ingest:
 
 eval:
 	uv run python -m evals.check_retrieval
+
+judge:
+	uv run python -m evals.judge
 
 dev:
 	$(MAKE) -j2 dev-backend dev-frontend

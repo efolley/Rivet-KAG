@@ -1,53 +1,52 @@
 [
   {
     "question": "What is the meal expense limit while travelling?",
-    "vector_source": "expense_policy.md"
+    "vector_source": "expense_policy.md",
+    "reference_answer": "Meals while travelling are capped at 60 EUR per day."
   },
   {
     "question": "What are the severity levels for incidents?",
-    "vector_source": "incident_response_runbook.md"
+    "vector_source": "incident_response_runbook.md",
+    "reference_answer": "SEV1 is a full outage or confirmed data breach, SEV2 is a major feature degraded or a suspected breach, and SEV3 is a minor issue with a workaround."
   },
   {
     "question": "How does the ML model rollout work?",
-    "vector_source": "ml_model_release_checklist.md"
+    "vector_source": "ml_model_release_checklist.md",
+    "reference_answer": "New models roll out gradually: 5% of traffic, then 25%, then 100%, with 24 hours between steps, monitored in Grafana."
   },
   {
     "question": "How do I reset my password?",
-    "vector_source": "support_faq.csv"
+    "vector_source": "support_faq.csv",
+    "reference_answer": "Use the Forgot password link on the sign-in page; a reset email arrives within 5 minutes."
   },
   {
     "question": "What is Atlas?",
-    "vector_source": "data_platform_handbook.md"
+    "vector_source": "data_platform_handbook.md",
+    "reference_answer": "Atlas is the Data Platform team's project to migrate from the legacy warehouse to a data lakehouse; it started in January 2026 and is active."
   },
   {
     "question": "When is a new employee's home office budget available?",
-    "vector_source": "expense_policy.md"
+    "vector_source": "expense_policy.md",
+    "reference_answer": "New employees have a one-time home office budget of 400 EUR, usable within their first 90 days."
   },
   {
     "question": "Who leads the Data Platform team?",
-    "graph_contains": [
-      "Priya Nair"
-    ]
+    "graph_contains": ["Priya Nair"],
+    "reference_answer": "Priya Nair leads the Data Platform team."
   },
   {
     "question": "What tools does the Beacon project use?",
-    "graph_contains": [
-      "Kafka",
-      "Airflow",
-      "GitHub"
-    ]
+    "graph_contains": ["Kafka", "Airflow", "GitHub"],
+    "reference_answer": "Beacon uses Kafka, Airflow and GitHub."
   },
   {
     "question": "Who works on the Sentinel project?",
-    "graph_contains": [
-      "Tom Baker",
-      "Elena Petrova"
-    ]
+    "graph_contains": ["Tom Baker", "Elena Petrova"],
+    "reference_answer": "Tom Baker and Elena Petrova work on the Sentinel project; Elena Petrova leads it."
   },
   {
     "question": "Which team owns the Compass project?",
-    "graph_contains": [
-      "Product"
-    ]
+    "graph_contains": ["Product"],
+    "reference_answer": "The Product team owns the Compass project."
   }
 ]

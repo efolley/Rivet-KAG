@@ -11,11 +11,6 @@ class StubParser:
         return Plan(intent="question_answering", query=message)
 
 
-class StubPIIMasker:
-    async def mask(self, text: str) -> str:  # TODO(guardrails): detect and mask PII
-        return text
-
-
 class StubVectorRetriever:
     source: SourceType = "vector"
 
@@ -48,8 +43,10 @@ class StubGraphRetriever:
 
 
 class StubAnswerer:
-    async def answer(self, query: str, context: list[Citation]) -> str:  # TODO(deepagents): agentic RAG
+    """Used when no ANTHROPIC_API_KEY is set; see pipeline.answering.agent.DeepAgentAnswerer."""
+
+    async def answer(self, query: str, context: list[Citation]) -> str:
         return (
             f'[stub answer] You asked: "{query}". Found {len(context)} context items. '
-            "Real retrieval and generation are not wired up yet."
+            "Set ANTHROPIC_API_KEY to get a real, generated answer."
         )
