@@ -16,7 +16,7 @@
 - Agentic RAG with structured (Pydantic) output
 - Upload Excel, CSV, Markdown and PDF files, ingested through LlamaIndex
 - Tracing (Langfuse) and evals (DeepEval, 25 golden questions)
-- Planned: user auth, agent actions (change data, analysis and plots)
+- Planned: user auth, agent actions (change data, analysis and plots), cost budgets, release gates, LLM-as-a-judge and a full audit trail — see [Production readiness](#production-readiness)
 
 ## Architecture
 
@@ -132,6 +132,100 @@ $ make eval
 
 It's a hand-rolled precursor to the "DeepEval, 25 golden questions" Phase 4 item — same idea, smaller and framework-free.
 
+## Production readiness
+
+Design targets for cost, quality and observability — not implemented yet, tracked in the [roadmap](#roadmap) (Phase 4). Answer synthesis is still a stub, so the numbers below describe the target system once DeepAgents lands, not current behavior; they're starting points to retune once there's real traffic.
+
+### Cost controls (tokenomics)
+
+One **inspection** = one `/api/chat` request/response cycle. Target: **≤$0.15/inspection**, split into a per-stage budget so no single stage can blow the total (prices are current Claude API rates — Sonnet 5 $2/$10 per MTok in/out, Haiku 4.5 $1/$5):
+
+| Stage | Spend driver | Budget | Notes |
+|---|---|---|---|
+| PII masking | — | $0.00 | Regex/NER, no LLM call — masking is a bad place to spend tokens |
+| Parse/route | small classification call | ≤$0.01 | Structured output, ~300 in / 100 out tokens. Use Haiku 4.5, not Sonnet — classification doesn't need a bigger model |
+| Retrieve (vector + graph) | — | $0.00 | Local embedding (fastembed) + rule-based Cypher generation; only infra cost, no per-token spend |
+| Merge / ROI-compress | optional reranker | ≤$0.005 | See below |
+| Answer synthesis | agentic RAG | ≤$0.12 | The dominant cost: cached system prompt + tool schemas, capped and compressed context |
+| **Total** | | **≤$0.15** | Reject or fall back to a retrieval-only answer if the pre-flight estimate exceeds this |
+
+- **Pre-flight estimation** — before the answerer call, run `messages.count_tokens` on the assembled prompt and skip the agent (return retrieval-only citations) rather than let an oversized prompt blow the budget after the fact.
+- **Actual cost accounting** — after every LLM call, read `response.usage` (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`) and multiply by the model's per-token price to get a real `cost_usd` for that stage. This is what lands in the trace — see [Observability and audit trail](#observability-and-audit-trail).
+- **Caching** — the answerer's system prompt and tool schemas are stable across requests; cache them (`cache_control: {type: "ephemeral"}`) so repeat requests pay roughly a tenth of the input cost for that portion. Watch `cache_read_input_tokens` — if it's zero across repeated requests, something is silently invalidating the prefix (a timestamp or unsorted JSON in the system prompt is the usual cause).
+- **ROI compression** — before merged context reaches the answerer, rank citations and keep only the highest-value ones per token: drop low-relevance chunks, cap total context (e.g. 2,000 tokens), summarize instead of sending long rows verbatim. This is `merge_context` (`src/pipeline/merge.py`), which today only dedupes by id — reranking/trimming is a TODO there, tracked alongside "Context merge and reranking" in the roadmap.
+- **Job-level limits** — $0.15 is a per-request cap. Separately cap spend per session (e.g. $1/user/day) and per batch job (eval/judge runs, e.g. $5/run), each with a hard circuit breaker: a job that exceeds its budget mid-run stops, it doesn't degrade silently.
+
+### Evaluation and release gates
+
+A release (prompt change, retriever change, or model swap) ships only when every **blocking** gate below passes against the golden set (`evals/golden_questions.json` — 10 retrieval questions today, growing toward the 25-question DeepEval set in the roadmap). **Warn** gates are reported, not enforced.
+
+| Dimension | Metric | Target | Gate |
+|---|---|---|---|
+| Retrieval quality | top-1 hit rate (`evals/check_retrieval.py`) | ≥90% | Blocking |
+| Answer quality | LLM-judge correctness score, 1–5 (see below) | mean ≥4.2, no individual score <3 | Blocking |
+| Citation | factual claims traceable to a cited snippet | 0 hallucinated citations | Blocking |
+| Citation | claims with no citation at all | ≤5% of claims | Blocking |
+| Latency | P50 end-to-end `/api/chat` | ≤2.5s | Warn >2.5s, blocking >5s |
+| Latency | P95 end-to-end | ≤6s | Warn >6s, blocking >10s |
+| Cost | mean $/inspection over the golden set | ≤$0.15 | Warn >$0.15, blocking >$0.20 |
+| HITL | sampled human review of production answers (5% of traffic, weekly) | ≥90% rated acceptable | Below 90% blocks the next release until reviewed |
+| HITL | escalation rate ("I don't know" / handoff to a human) | within 2× the 7-day baseline | Blocking if exceeded — usually signals a retrieval or routing regression |
+
+### LLM-as-a-judge
+
+Golden-string matching — what `evals/check_retrieval.py` does today — only works for retrieval: it checks "did the right source come back", not "is the final answer correct." Once answer synthesis is real, correctness has to be judged, not string-matched; this is what feeds the Answer quality and Citation rows above.
+
+- **Grading method** — [DeepEval](https://docs.confident-ai.com/)'s `GEval` and `FaithfulnessMetric`, backed by a Claude judge call against a small structured rubric (correctness vs. a reference answer, citation faithfulness, completeness) rather than a single free-text "rate this 1–10" prompt, which grades inconsistently run to run.
+- **Judge independence** — prefer a different model tier for judging than for answering where practical (e.g. Sonnet judges a Haiku-tier answer), to reduce self-preference bias; where the same model must judge itself, lean on the rubric's structure rather than the judge's raw opinion.
+- **Output** — a structured score (1–5) per dimension plus a short rationale, stored in the trace so a failing release gate points at *why*, not just *that* it failed.
+- **Cost** — judge runs are an offline/batch job, not counted against the $0.15/inspection budget; tracked under the batch-job cap in [Cost controls](#cost-controls-tokenomics) instead.
+- **Interim step** — before adopting the full DeepEval framework, `evals/check_retrieval.py`'s pattern (a small hand-rolled script, no framework) extends naturally to an `evals/judge.py` that asks Claude to score each golden answer against a reference. Same idea as the eventual DeepEval suite, smaller.
+
+### Observability and audit trail
+
+**Per-request trace** (Langfuse; today there's only an implicit FastAPI log line in `orchestrator.py`):
+
+| Field | Description |
+|---|---|
+| `request_id` / `session_id` | correlates with the existing API log line |
+| `question_masked` | the PII-masked question — `question_raw` is never persisted |
+| `answer`, `citations[]` | what the user saw |
+| `sources_queried`, `intent` | which of vector/graph the router picked, and why |
+| `total_latency_ms`, `total_cost_usd` | sum of the per-stage fields below |
+| `total_input_tokens`, `total_output_tokens`, `cache_read_tokens`, `cache_creation_tokens` | |
+| `outcome` | `success` / `fallback_used` / `guardrail_blocked` / `error` |
+| `guardrail_violations[]` | which check tripped, if any |
+
+**Per-stage trace** (extends `StageTrace` in `src/schemas/chat.py`, which today only carries `name`/`detail`/`duration_ms`):
+
+| Field | Applies to | Description |
+|---|---|---|
+| `model` | parse, answer | which model actually served the call (post-fallback) |
+| `input_tokens`, `output_tokens`, `cache_read_tokens` | parse, answer | from `response.usage` |
+| `cost_usd` | parse, answer | tokens × the model's per-token price |
+| `fallback_triggered` | parse | true when the router fell back to querying both sources |
+| `query_used`, `num_results`, `top_score` | vector retrieve | |
+| `keywords`, `num_nodes_matched` | graph retrieve | the generated Cypher's keyword list and match count |
+| `error` | any | category + message; the full stack trace goes to logs, not the user-facing trace |
+
+**Audit log** — append-only (Postgres `chat_audit_log`, once Phase 3 lands), one row per request, 90-day retention. Only `question_masked` is stored, never the raw question — the audit trail must not become a second place PII leaks from.
+
+**Alert conditions**:
+
+| Condition | Threshold | Action |
+|---|---|---|
+| Mean cost/request, 15 min rolling | >$0.15 | Warn |
+| Mean cost/request, 15 min rolling | >$0.30 | Page + force the cheaper model / stub answerer |
+| P95 latency, 5 min | >6s | Warn |
+| P95 latency, 5 min | >15s | Page |
+| 5xx / guardrail-block rate, 10 min | >2% | Warn |
+| 5xx / guardrail-block rate, 10 min | >10% | Page + auto-rollback to the previous prompt/model version |
+| Router fallback rate, 30 min | >20% | Warn — LLM router likely failing or misconfigured |
+| Empty-result rate (vector or graph), 30 min | >15% | Warn — index or data problem |
+| Judge-flagged hallucination rate, daily | >5% of sampled answers | Page — quality regression |
+| Guardrail trip rate | >3× the 7-day baseline | Warn — possible prompt-injection campaign |
+| Prompt cache hit rate | <50% of its 7-day baseline | Warn — silent cache invalidator, see [Cost controls](#cost-controls-tokenomics) |
+
 ## Project structure
 
 ```
@@ -178,19 +272,23 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 
 - [ ] DeepAgents agentic RAG with Pydantic output
 - [ ] Guardrails middleware and PII masking
-- [ ] Context merge and reranking
+- [ ] Context merge, reranking and ROI compression (trim to the highest-value tokens before the answerer — see [Cost controls](#cost-controls-tokenomics))
 
 **Phase 3: Platform**
 
 - [ ] User auth
-- [ ] PostgreSQL for users, chat history and ingestion progress
+- [ ] PostgreSQL for users, chat history, ingestion progress and the audit trail (`chat_audit_log`)
 - [ ] API gateway with Kafka (async messaging) and Redis (cache, sessions)
 - [ ] Docker packaging of the full stack (postponed)
 
-**Phase 4: Quality and polish**
+**Phase 4: Quality and polish** — see [Production readiness](#production-readiness) for the full design
 
-- [ ] Langfuse tracing
-- [ ] DeepEval with 25 golden questions
+- [ ] Langfuse tracing with the per-request/per-stage field set
+- [ ] Per-stage cost accounting (`response.usage` → `cost_usd`) and the $0.15/inspection budget, with pre-flight `count_tokens` rejection
+- [ ] Prompt caching for the answerer's system prompt and tool schemas
+- [ ] DeepEval with 25 golden questions, including LLM-as-a-judge (`GEval`, `FaithfulnessMetric`)
+- [ ] Release gates: quality/latency/cost/citation/HITL thresholds, enforced in CI
+- [ ] Alerting on the conditions in [Observability and audit trail](#observability-and-audit-trail)
 - [ ] Demo GIF
 
 **ToDo next**
