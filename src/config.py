@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     neo4j_password: str = "rivet-dev-password"
 
     llm_model: str = "claude-sonnet-5"
-    anthropic_api_key: str = ""
+    anthropic_api_key: str = ""  # set to switch the request parser/router from stub to LangChain+Claude
 
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(default="change-me", repr=False)
     jwt_ttl_minutes: int = 60
 
-    use_stubs: bool = True  # flip to False once real retrievers/agent are wired in
+    use_stubs: bool = True  # False switches to real Milvus/Neo4j retrieval; answerer stays stubbed either way
 
 
 @lru_cache

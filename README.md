@@ -2,7 +2,7 @@
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
 
-> Status: early stage. The chat UI, API contract, sample data, upload tooling and a Data Management view (live Milvus and Neo4j contents) work. Chat answers are still stubbed: retrieval, the agent and the platform pieces are on the [roadmap](#roadmap).
+> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval (`USE_STUBS=false`) and an LLM request router (`ANTHROPIC_API_KEY`) work — 10/10 on the mini retrieval-accuracy check (see [Real retrieval and routing](#real-retrieval-and-routing)). Answer generation is still a stub: the agent and the platform pieces are on the [roadmap](#roadmap).
 
 <!-- TODO: demo GIF -->
 
@@ -111,6 +111,27 @@ curl -F "file=@notes.md" http://localhost:8000/api/files
 
 Markdown is split one chunk per `##` heading; CSV and Excel one chunk per row (via LlamaIndex's `PagedCSVReader` / `PandasExcelReader`); PDF one chunk per page (via `PDFReader`). Unsupported types get a 400, and a file with no extractable text gets a 422.
 
+## Real retrieval and routing
+
+By default (`USE_STUBS=true`) the chat pipeline uses canned retrievers so it works with no databases running. Set `USE_STUBS=false` in `.env` (with `make neo4j` and `make ingest` already done) to switch `/api/chat` to real retrieval:
+
+- **Vector (`src/pipeline/retrieval/milvus.py`)** — embeds the question and runs a cosine ANN search over the ingested chunks, returning the top 4 as citations with their similarity score.
+- **Graph (`src/pipeline/retrieval/neo4j.py`)** — a lightweight, keyword-based Cypher *generator*: it strips stopwords from the question, builds a query that matches nodes whose `name`/`title`/`id` contains one of the remaining keywords, and returns each match's direct relationships as a citation (e.g. `Priya Nair (Employee) -[:LEADS]-> Data Platform (Team)`). This isn't an LLM-based NL-to-Cypher translator — see the router below for that — but the query really is built from the question and executed against Neo4j, not fixed.
+
+Independently, set `ANTHROPIC_API_KEY` in `.env` to switch on the **request parser and router** (`src/pipeline/parsing/router.py`, LangChain + Claude): it classifies the question's intent and decides which retriever(s) to query, instead of always querying both. It uses `with_structured_output` against a small `RouterDecision` schema (`intent`, `sources`), so the model's choice is validated, not parsed out of free text. If the call fails (bad key, timeout, malformed output) it's caught and logged, and the router falls back to querying both sources — a bad LLM response degrades the answer, it never 500s the request. This doesn't require the databases to be running, so it works with `USE_STUBS=true` too. Answer synthesis stays stubbed either way; no agent is wired in yet.
+
+`evals/check_retrieval.py` is a 10-question accuracy check against the *live* databases (unlike the mocked unit tests, it proves the retrievers find the right thing in the sample data). Run it with `make eval` after `make ingest`:
+
+```
+$ make eval
+[PASS] What is the meal expense limit while travelling?
+       expected top source 'expense_policy.md', got 'expense_policy.md — Limits'
+...
+10/10 correct (100%)
+```
+
+It's a hand-rolled precursor to the "DeepEval, 25 golden questions" Phase 4 item — same idea, smaller and framework-free.
+
 ## Project structure
 
 ```
@@ -118,6 +139,8 @@ src/                     backend (FastAPI), imported as `src.*`
   main.py, config.py     app factory, env-based settings
   api/                   routes (health, chat, data, auth, files) and dependencies
   pipeline/              stage interfaces (base.py), orchestrator, stubs, factory
+  pipeline/retrieval/    real retrievers: milvus.py (vector search), neo4j.py (Cypher generation)
+  pipeline/parsing/      real request parser: router.py (LangChain + Claude, structured output)
   ingestion/             LlamaIndex loaders (md/csv/xlsx/pdf), embeddings, embed+upsert pipeline
   clients/               Milvus (Lite) session and Neo4j driver
   guardrails/            input checks (run before the pipeline)
@@ -125,12 +148,13 @@ src/                     backend (FastAPI), imported as `src.*`
   core/                  logging, error handling
   db/ observability/     placeholders for Postgres, Langfuse
 utils/                   CLI: bulk-load source_data/ and manual uploads into Milvus and Neo4j
+evals/                   golden_questions.json + a live retrieval-accuracy check
 source_data/             sample data (vector_data/, graph_data/) and an HTML viewer
 tests/                   pytest suite
 frontend/src/            React UI (Chat, Data Management)
 ```
 
-Each pipeline stage is a Protocol in `pipeline/base.py`. To add a real Milvus retriever, implement `Retriever` and register it in `pipeline/factory.py`.
+Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` selects stub or real retrievers based on `USE_STUBS`, and the LangChain router whenever `ANTHROPIC_API_KEY` is set.
 
 ## Roadmap
 
@@ -147,8 +171,8 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. To add a real Milvus re
 - [X] Create sample dataset for vector and graph DBs
 - [X] Milvus (Lite) + Neo4j running locally, sample data loaded by `utils/`
 - [X] LlamaIndex ingestion (Excel, CSV, MD, PDF) and upload endpoint
-- [ ] Real vector retrieval (Milvus) and Cypher generation (Neo4j)
-- [ ] Request parser and router (LangChain)
+- [X] Real vector retrieval (Milvus) and Cypher generation (Neo4j)
+- [X] Request parser and router (LangChain)
 
 **Phase 2: Agent and safety**
 

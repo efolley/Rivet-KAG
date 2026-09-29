@@ -1,10 +1,13 @@
-.PHONY: neo4j ingest dev dev-backend dev-frontend install lint test
+.PHONY: neo4j ingest eval dev dev-backend dev-frontend install lint test
 
 neo4j:
 	brew services start neo4j
 
 ingest:
 	uv run python -m utils.upload all
+
+eval:
+	uv run python -m evals.check_retrieval
 
 dev:
 	$(MAKE) -j2 dev-backend dev-frontend
@@ -20,7 +23,7 @@ dev-frontend:
 	cd frontend && npm run dev
 
 lint:
-	uv run ruff check src tests
+	uv run ruff check src utils evals tests
 	uv run mypy
 	cd frontend && npx tsc --noEmit
 

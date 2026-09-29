@@ -1,5 +1,9 @@
 from src.config import Settings
+from src.pipeline.base import RequestParser, Retriever
 from src.pipeline.orchestrator import Pipeline
+from src.pipeline.parsing.router import LangChainRouter
+from src.pipeline.retrieval.milvus import MilvusRetriever
+from src.pipeline.retrieval.neo4j import Neo4jRetriever
 from src.pipeline.stubs import (
     StubAnswerer,
     StubGraphRetriever,
@@ -10,11 +14,17 @@ from src.pipeline.stubs import (
 
 
 def build_pipeline(settings: Settings) -> Pipeline:
-    if not settings.use_stubs:
-        raise NotImplementedError("Real pipeline components are not implemented yet; set USE_STUBS=true.")
+    # Retrieval is real once USE_STUBS=false (needs Milvus + Neo4j reachable, e.g. after
+    # `make neo4j` + `make ingest`). The LLM router is used whenever an API key is configured,
+    # independent of USE_STUBS: it needs no local database, just credentials. Answering stays
+    # stubbed either way; no agent is wired in yet. CI sets neither, so it stays fully offline.
+    retrievers: list[Retriever] = (
+        [StubVectorRetriever(), StubGraphRetriever()] if settings.use_stubs else [MilvusRetriever(), Neo4jRetriever()]
+    )
+    parser: RequestParser = LangChainRouter(settings) if settings.anthropic_api_key else StubParser()
     return Pipeline(
-        parser=StubParser(),
+        parser=parser,
         masker=StubPIIMasker(),
-        retrievers=[StubVectorRetriever(), StubGraphRetriever()],
+        retrievers=retrievers,
         answerer=StubAnswerer(),
     )

@@ -1,0 +1,53 @@
+[
+  {
+    "question": "What is the meal expense limit while travelling?",
+    "vector_source": "expense_policy.md"
+  },
+  {
+    "question": "What are the severity levels for incidents?",
+    "vector_source": "incident_response_runbook.md"
+  },
+  {
+    "question": "How does the ML model rollout work?",
+    "vector_source": "ml_model_release_checklist.md"
+  },
+  {
+    "question": "How do I reset my password?",
+    "vector_source": "support_faq.csv"
+  },
+  {
+    "question": "What is Atlas?",
+    "vector_source": "data_platform_handbook.md"
+  },
+  {
+    "question": "When is a new employee's home office budget available?",
+    "vector_source": "expense_policy.md"
+  },
+  {
+    "question": "Who leads the Data Platform team?",
+    "graph_contains": [
+      "Priya Nair"
+    ]
+  },
+  {
+    "question": "What tools does the Beacon project use?",
+    "graph_contains": [
+      "Kafka",
+      "Airflow",
+      "GitHub"
+    ]
+  },
+  {
+    "question": "Who works on the Sentinel project?",
+    "graph_contains": [
+      "Tom Baker",
+      "Elena Petrova"
+    ]
+  },
+  {
+    "question": "Which team owns the Compass project?",
+    "graph_contains": [
+      "Product"
+    ]
+  }
+]
