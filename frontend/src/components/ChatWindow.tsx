@@ -37,8 +37,29 @@ export default function ChatWindow() {
         {messages.length === 0 && <p className="empty">Ask a question about your data.</p>}
         {messages.map((m, i) => (
           <div key={i} className={`msg ${m.role}${m.error ? " error" : ""}`}>
-            <p>{m.text}</p>
-            {m.citations && <Citations items={m.citations} />}
+            {m.role === "assistant" && !m.error ? (
+              <>
+                <h4 className="section-title">Answer</h4>
+                <p>{m.text}</p>
+                {m.citations && m.citations.length > 0 && (
+                  <div className="citation-chips">
+                    {m.citations.map((c, ci) => (
+                      <span key={c.id} className={`chip-ref ${c.source_type}`}>
+                        [{ci + 1}] {c.title}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {m.citations && m.citations.length > 0 && (
+                  <>
+                    <h4 className="section-title">Context</h4>
+                    <Citations items={m.citations} />
+                  </>
+                )}
+              </>
+            ) : (
+              <p>{m.text}</p>
+            )}
           </div>
         ))}
         {loading && <div className="msg assistant">Thinking…</div>}

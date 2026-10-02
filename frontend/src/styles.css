@@ -18,9 +18,14 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f5f6f8; color
 .msg p { margin: 0; white-space: pre-wrap; }
 .msg.user { align-self: flex-end; background: #2563eb; color: #fff; border-color: #2563eb; }
 .msg.error { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
-.citations { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
-.citations summary { cursor: pointer; }
-.citations details p { margin: 6px 0 4px 8px; color: #4b5563; }
+.section-title { margin: 0 0 4px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; }
+.msg .section-title:not(:first-child) { margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
+.citation-chips { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-ref { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
+.context-items { display: flex; flex-direction: column; gap: 10px; }
+.context-item { padding: 8px 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; }
+.context-content { margin: 0; color: #1a1d21; }
+.context-meta { margin: 6px 0 0; font-size: 0.75rem; color: #6b7280; }
 .badge { font-size: 0.7rem; padding: 1px 6px; border-radius: 6px; margin-right: 6px; color: #fff; }
 .badge.vector { background: #7c3aed; }
 .badge.graph { background: #059669; }
