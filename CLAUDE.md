@@ -3,6 +3,35 @@
 Guidance for whoever (human or agent) develops in this repo next. `README.md` is for people using
 or evaluating Rivet KAG; this file is for people changing it.
 
+## Current progress (as of 2026-10-02)
+
+**Branch:** work is on `feat/phase_3`, pushed to `origin/feat/phase_3` (commit `db069db`), **not
+merged to `main`** and no PR opened yet — `main` is still at `80932a0` (Production readiness
+docs). Decide whether to open a PR or merge directly before starting new work, rather than
+stacking further commits on an unreviewed branch by default.
+
+**Done, in order** (each phase's README roadmap checkboxes are the source of truth — grep
+`^## Roadmap` there for the exact state):
+- Phase 0 (skeleton), Phase 1 (sample data, Milvus Lite + Neo4j, LlamaIndex ingestion, real
+  retrieval + Cypher generation, LangChain router) — all on `main`.
+- Phase 2 (DeepAgents answerer with Pydantic output, real PII masking, LLM-as-a-judge
+  `evals/judge.py`) — on `main`. One item left: "Context merge, reranking and ROI compression"
+  (`src/pipeline/merge.py` still only dedupes by id).
+- Phase 3 (Platform: JWT auth, Postgres, Redis cache, Kafka events) — **on `feat/phase_3`,
+  unmerged**. See the README's "Platform: auth, history and messaging" section for what's real.
+  Docker packaging stays explicitly postponed (not a gap to fill).
+
+**Not started:** Phase 4 (Langfuse tracing, per-call cost accounting, prompt caching, the full
+DeepEval suite, release gates, alerting, demo GIF) and the "Agent actions" backlog item. The
+"Production readiness" section of the README is a *design*, not code, for all of this — don't
+assume anything there is implemented without checking.
+
+**What hasn't been verified live:** everything behind `ANTHROPIC_API_KEY`'s happy path. No valid
+Anthropic key has been available in this environment at any point — the router, the answerer and
+`evals/judge.py` are all verified only up to "reaches the real API and fails for the expected
+reason" (a genuine 401 on an invalid key), never a real successful completion. If a key becomes
+available, running `evals/judge.py` for real is the highest-value next check.
+
 ## Development philosophy — read before adding anything
 
 **The goal is to test a production-shaped AI system design simply — not to build a product or a
