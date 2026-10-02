@@ -15,8 +15,11 @@ stacking further commits on an unreviewed branch by default.
 - Phase 0 (skeleton), Phase 1 (sample data, Milvus Lite + Neo4j, LlamaIndex ingestion, real
   retrieval + Cypher generation, LangChain router) — all on `main`.
 - Phase 2 (DeepAgents answerer with Pydantic output, real PII masking, LLM-as-a-judge
-  `evals/judge.py`) — on `main`. One item left: "Context merge, reranking and ROI compression"
-  (`src/pipeline/merge.py` still only dedupes by id).
+  `evals/judge.py`, context merge/reranking/ROI compression) — **complete**, on `main` once
+  `feat/phase_3` lands (currently also present on `feat/phase_3`, since the merge-context work was
+  done on top of it). `src/pipeline/merge.py` now dedupes by id, ranks by retriever score
+  (unscored last), and greedily trims to a token budget (default 2,000, cheap char-based estimate)
+  — no summarization step, verbatim-or-dropped.
 - Phase 3 (Platform: JWT auth, Postgres, Redis cache, Kafka events) — **on `feat/phase_3`,
   unmerged**. See the README's "Platform: auth, history and messaging" section for what's real.
   Docker packaging stays explicitly postponed (not a gap to fill).

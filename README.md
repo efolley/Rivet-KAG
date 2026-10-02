@@ -176,7 +176,7 @@ One **inspection** = one `/api/chat` request/response cycle. Target: **≤$0.15/
 - **Pre-flight estimation** — before the answerer call, run `messages.count_tokens` on the assembled prompt and skip the agent (return retrieval-only citations) rather than let an oversized prompt blow the budget after the fact.
 - **Actual cost accounting** — after every LLM call, read `response.usage` (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`) and multiply by the model's per-token price to get a real `cost_usd` for that stage. This is what lands in the trace — see [Observability and audit trail](#observability-and-audit-trail).
 - **Caching** — the answerer's system prompt and tool schemas are stable across requests; cache them (`cache_control: {type: "ephemeral"}`) so repeat requests pay roughly a tenth of the input cost for that portion. Watch `cache_read_input_tokens` — if it's zero across repeated requests, something is silently invalidating the prefix (a timestamp or unsorted JSON in the system prompt is the usual cause).
-- **ROI compression** — before merged context reaches the answerer, rank citations and keep only the highest-value ones per token: drop low-relevance chunks, cap total context (e.g. 2,000 tokens), summarize instead of sending long rows verbatim. This is `merge_context` (`src/pipeline/merge.py`), which today only dedupes by id — reranking/trimming is a TODO there, tracked alongside "Context merge and reranking" in the roadmap.
+- **ROI compression** — before merged context reaches the answerer, rank citations and keep only the highest-value ones per token: drop low-relevance chunks, cap total context (default 2,000 tokens). This is `merge_context` (`src/pipeline/merge.py`): dedupe by id, rank by retriever score (unscored citations sort last), then greedily fill the token budget (cheap char-based estimate, no LLM call) — always keeping at least one citation even if it alone exceeds the budget. There's no summarization step; chunks are kept verbatim or dropped.
 - **Job-level limits** — $0.15 is a per-request cap. Separately cap spend per session (e.g. $1/user/day) and per batch job (eval/judge runs, e.g. $5/run), each with a hard circuit breaker: a job that exceeds its budget mid-run stops, it doesn't degrade silently.
 
 ### Evaluation and release gates
@@ -299,7 +299,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 
 - [X] DeepAgents agentic RAG with Pydantic output
 - [X] Guardrails middleware and PII masking
-- [ ] Context merge, reranking and ROI compression (trim to the highest-value tokens before the answerer — see [Cost controls](#cost-controls-tokenomics))
+- [X] Context merge, reranking and ROI compression (trim to the highest-value tokens before the answerer — see [Cost controls](#cost-controls-tokenomics))
 
 **Phase 3: Platform**
 
