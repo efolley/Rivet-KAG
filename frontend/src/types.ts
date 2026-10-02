@@ -18,6 +18,19 @@ export interface ChatResponse {
   trace: StageTrace[];
 }
 
+export type LLMProvider = "anthropic" | "openai" | "ollama";
+
+export interface ModelOption {
+  id: string;
+  label: string;
+}
+
+export interface ModelCatalog {
+  providers: Record<LLMProvider, ModelOption[]>;
+  default_provider: LLMProvider;
+  default_model: string;
+}
+
 export interface Message {
   role: "user" | "assistant";
   text: string;
