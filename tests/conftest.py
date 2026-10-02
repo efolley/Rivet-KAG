@@ -3,17 +3,36 @@
 keeping with this project's "tests never need a live service" rule.
 """
 
-from collections.abc import AsyncGenerator
-from typing import Any
+import dotenv
 
-import pytest
-import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+# pymilvus's own settings.py calls load_dotenv() at import time (see CLAUDE.md's known gotchas),
+# which mutates the real process environment with every key in a developer's .env -- API keys,
+# LLM_PROVIDER, USE_STUBS, all of it -- not just the Milvus-related ones. That import happens
+# transitively the moment this conftest pulls in src.main below, so without neutering it first,
+# a local .env silently changes which code path every test exercises (env vars beat a bare
+# Settings(...) call's hardcoded defaults for every field the test didn't pass explicitly).
+# This must run before any import below that could reach pymilvus.
+dotenv.load_dotenv = lambda *args, **kwargs: False  # type: ignore[assignment]
 
-from src.db import Base
-from src.db.engine import get_session
-from src.main import app
+from collections.abc import AsyncGenerator  # noqa: E402
+from typing import Any  # noqa: E402
+
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from pydantic_settings import SettingsConfigDict  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from src.config import Settings  # noqa: E402
+from src.db import Base  # noqa: E402
+from src.db.engine import get_session  # noqa: E402
+from src.main import app  # noqa: E402
+
+# Separately, pydantic-settings does its own .env parsing (not via dotenv.load_dotenv, so the
+# patch above doesn't touch it) and would otherwise fill in every field a test didn't pass
+# explicitly from the real .env. Disable that source too, so `Settings(...)` in tests only ever
+# sees its hardcoded defaults plus whatever a test passes.
+Settings.model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
 
 @pytest.fixture(autouse=True)

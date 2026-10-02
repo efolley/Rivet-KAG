@@ -29,11 +29,21 @@ DeepEval suite, release gates, alerting, demo GIF) and the "Agent actions" backl
 "Production readiness" section of the README is a *design*, not code, for all of this — don't
 assume anything there is implemented without checking.
 
-**What hasn't been verified live:** everything behind `ANTHROPIC_API_KEY`'s happy path. No valid
-Anthropic key has been available in this environment at any point — the router, the answerer and
-`evals/judge.py` are all verified only up to "reaches the real API and fails for the expected
-reason" (a genuine 401 on an invalid key), never a real successful completion. If a key becomes
-available, running `evals/judge.py` for real is the highest-value next check.
+**Live-tested on 2026-10-02** (platform services up via `make platform`, `.env` with
+`USE_STUBS=false`): `make ingest` and `make eval` both ran clean — **10/10 live retrieval
+accuracy** against real Milvus + Neo4j. A model router was added (`LLM_PROVIDER=anthropic|openai|
+ollama`, answerer-only — see README's "Model router") so the answerer could run against a local
+Ollama (`llama3.2:latest`) for free. With a real but **out-of-credit** Anthropic key (`ANTHROPIC_API_KEY`
+valid, account balance too low): the LLM router hit a real `400` from `api.anthropic.com`
+("credit balance too low") and **gracefully fell back to querying both sources**, confirmed live
+(not mocked) for the first time; the Ollama-backed `DeepAgentAnswerer` then answered normally.
+`evals/judge.py`'s own grading call (hardcoded to Claude regardless of `LLM_PROVIDER`) hit the
+same billing error and exited uncaught — expected, since that script has no fallback by design.
+**Net: the real happy path for any Anthropic-backed stage is still unverified** — this session
+upgraded the known failure mode from "401 on an invalid key" to "400 on a valid key with no
+credit," which is a strictly better signal (proves auth works, not just that a request is
+well-formed) but still isn't a successful completion. Adding credit to that Anthropic account and
+rerunning `make judge` is the single highest-value next check.
 
 ## Development philosophy — read before adding anything
 
@@ -165,6 +175,24 @@ make judge       # live LLM-as-a-judge run — needs ANTHROPIC_API_KEY, costs re
   `max_tokens=`. `ChatOllama` (langchain-ollama) has no aliasing at all (`model=`, `base_url=`,
   `num_predict=` all match the field names) and no `timeout=` kwarg. Check `model_fields[...].alias`
   per class before trusting either convention to carry over.
+- **`pymilvus` reads `MILVUS_URI` from the environment itself**, independent of our `Settings`:
+  `pymilvus/settings.py` calls `load_dotenv()` and `os.getenv("MILVUS_URI", ...)` at import time,
+  expecting a server address (`http://host:19530`), not a Milvus Lite file path. A `.env` that sets
+  `MILVUS_URI=./data/milvus.db` (the natural name to pick) makes pymilvus's own connection
+  singleton raise `ConnectionConfigException` before any of our code runs, even for calls that
+  never touch that default connection. Our setting is `RIVET_MILVUS_URI` specifically to avoid
+  this collision (see `src/config.py`) — don't rename it back to `MILVUS_URI`. The same
+  `load_dotenv()` call is a bigger, quieter problem than just that one key: it mutates the real
+  process's `os.environ` with **every** key from a developer's `.env` — API keys, `LLM_PROVIDER`,
+  `USE_STUBS`, all of it — the moment `pymilvus` is imported anywhere, which happens transitively
+  the instant `tests/conftest.py` pulls in `src.main`. Without a guard, a local `.env` silently
+  changes which code path every test exercises (`Settings(...)` calls in tests only override the
+  fields they pass explicitly; env vars fill in the rest ahead of hardcoded defaults). Fixed by
+  `tests/conftest.py` neutering `dotenv.load_dotenv` *and* setting `Settings.model_config =
+  SettingsConfigDict(env_file=None, ...)` (pydantic-settings does its own separate `.env`
+  parsing, untouched by patching `dotenv.load_dotenv`) — both are needed, and both must happen
+  before any import that could reach `pymilvus`. This is why `.env` must exist for live manual
+  runs but the test suite must never assume one is absent.
 - **`MarkdownReader.parse_tups()` (LlamaIndex)** only starts a new chunk when a heading *level*
   repeats, not on every heading — it silently merges a document's first section into its title.
   Don't use it for "one chunk per heading"; split markdown directly instead (see
