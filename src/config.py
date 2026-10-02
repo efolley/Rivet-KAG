@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     neo4j_password: str = "rivet-dev-password"
 
     llm_model: str = "claude-sonnet-5"
-    anthropic_api_key: str = ""  # set to switch the request parser/router from stub to LangChain+Claude
+    anthropic_api_key: str = ""  # set to switch the parser/router and answerer from stub to real
 
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
@@ -28,8 +28,9 @@ class Settings(BaseSettings):
 
     jwt_secret: str = Field(default="change-me", repr=False)
     jwt_ttl_minutes: int = 60
+    response_cache_ttl_seconds: int = 300  # how long an identical question reuses a cached /api/chat answer
 
-    use_stubs: bool = True  # False switches to real Milvus/Neo4j retrieval; answerer stays stubbed either way
+    use_stubs: bool = True  # False switches to real Milvus/Neo4j retrieval; independent of ANTHROPIC_API_KEY
 
 
 @lru_cache

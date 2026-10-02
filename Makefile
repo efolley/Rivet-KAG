@@ -1,7 +1,18 @@
-.PHONY: neo4j ingest eval judge dev dev-backend dev-frontend install lint test
+.PHONY: neo4j postgres redis kafka platform ingest eval judge dev dev-backend dev-frontend install lint test
 
 neo4j:
 	brew services start neo4j
+
+postgres:
+	brew services start postgresql@16
+
+redis:
+	brew services start redis
+
+kafka:
+	brew services start kafka
+
+platform: neo4j postgres redis kafka
 
 ingest:
 	uv run python -m utils.upload all

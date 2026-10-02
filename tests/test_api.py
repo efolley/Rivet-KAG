@@ -31,8 +31,10 @@ def test_guardrail_blocks_prompt_injection() -> None:
     assert r.json()["error"]["code"] == "guardrail_violation"
 
 
-def test_unbuilt_feature_returns_501() -> None:
-    assert client.post("/api/auth/login").status_code == 501
+def test_login_rejects_a_missing_body() -> None:
+    # auth is implemented (see tests/test_auth.py); this just checks the route is wired to real
+    # request validation, not the old 501 stub.
+    assert client.post("/api/auth/login").status_code == 422
 
 
 def test_data_overview_reports_unavailable_databases_instead_of_failing(monkeypatch: pytest.MonkeyPatch) -> None:

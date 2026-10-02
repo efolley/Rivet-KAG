@@ -1,11 +1,129 @@
-from fastapi import APIRouter
+import hashlib
+import logging
+import time
 
-from src.api.deps import PipelineDep
+from fastapi import APIRouter
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.api.deps import CurrentUserIdDep, DbSessionDep, PipelineDep, SettingsDep
+from src.clients import get_redis, publish_event
+from src.config import Settings
+from src.core.errors import GuardrailViolation
+from src.db import ChatAuditLog, ChatHistory
+from src.guardrails import mask_pii
 from src.schemas import ChatRequest, ChatResponse
 
 router = APIRouter(tags=["chat"])
+log = logging.getLogger(__name__)
+
+
+def _cache_key(settings: Settings, question_masked: str) -> str:
+    # Mode is part of the key so switching USE_STUBS/ANTHROPIC_API_KEY never serves a cached
+    # answer from a different mode.
+    mode = f"{settings.use_stubs}:{bool(settings.anthropic_api_key)}"
+    digest = hashlib.sha256(question_masked.strip().lower().encode()).hexdigest()
+    return f"chat:{mode}:{digest}"
+
+
+async def _get_cached(key: str) -> ChatResponse | None:
+    try:
+        raw = await get_redis().get(key)
+    except Exception:
+        log.warning("Redis unavailable; skipping response cache lookup", exc_info=True)
+        return None
+    return ChatResponse.model_validate_json(raw) if raw else None
+
+
+async def _set_cached(key: str, response: ChatResponse, ttl_seconds: int) -> None:
+    try:
+        await get_redis().set(key, response.model_dump_json(), ex=ttl_seconds)
+    except Exception:
+        log.warning("Redis unavailable; response was not cached", exc_info=True)
+
+
+async def _record(
+    db: AsyncSession,
+    req: ChatRequest,
+    user_id: int | None,
+    question_masked: str,
+    answer: str,
+    citations_count: int,
+    sources_queried: str,
+    outcome: str,
+    duration_ms: float,
+) -> None:
+    """Best-effort: a Postgres outage degrades history/audit logging, it must never fail the
+    chat response itself."""
+    try:
+        db.add(ChatHistory(session_id=req.session_id, user_id=user_id, question_masked=question_masked, answer=answer))
+        db.add(
+            ChatAuditLog(
+                session_id=req.session_id,
+                user_id=user_id,
+                question_masked=question_masked,
+                answer=answer,
+                sources_queried=sources_queried,
+                citations_count=citations_count,
+                outcome=outcome,
+                duration_ms=duration_ms,
+            )
+        )
+        await db.commit()
+    except Exception:
+        log.warning("Could not write chat history/audit log", exc_info=True)
+        await db.rollback()
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, pipeline: PipelineDep) -> ChatResponse:
-    return await pipeline.run(req)
+async def chat(
+    req: ChatRequest, pipeline: PipelineDep, db: DbSessionDep, settings: SettingsDep, user_id: CurrentUserIdDep
+) -> ChatResponse:
+    # Masked independently of the pipeline's own "pii" stage: this is for logging/caching, and
+    # must hold even on paths (guardrail block, error) where the pipeline never gets that far.
+    question_masked = mask_pii(req.message)
+    key = _cache_key(settings, question_masked)
+
+    cached = await _get_cached(key)
+    if cached is not None:
+        await _record(
+            db, req, user_id, question_masked, cached.answer, len(cached.citations), "", "success_cached", 0.0
+        )
+        return cached
+
+    start = time.perf_counter()
+    try:
+        response = await pipeline.run(req)
+    except GuardrailViolation:
+        duration_ms = round((time.perf_counter() - start) * 1000, 1)
+        await _record(db, req, user_id, question_masked, "", 0, "", "guardrail_blocked", duration_ms)
+        raise
+    except Exception:
+        duration_ms = round((time.perf_counter() - start) * 1000, 1)
+        await _record(db, req, user_id, question_masked, "", 0, "", "error", duration_ms)
+        raise
+    duration_ms = round((time.perf_counter() - start) * 1000, 1)
+
+    await _set_cached(key, response, settings.response_cache_ttl_seconds)
+    sources_queried = ",".join(sorted({c.source_type for c in response.citations}))
+    await _record(
+        db,
+        req,
+        user_id,
+        question_masked,
+        response.answer,
+        len(response.citations),
+        sources_queried,
+        "success",
+        duration_ms,
+    )
+    await publish_event(
+        "rivet.chat.completed",
+        {
+            "session_id": req.session_id,
+            "user_id": user_id,
+            "citations": len(response.citations),
+            "sources_queried": sources_queried,
+            "duration_ms": duration_ms,
+        },
+    )
+    return response

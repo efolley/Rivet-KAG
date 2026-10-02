@@ -2,7 +2,7 @@
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
 
-> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output, and regex-based PII masking all work — the LLM pieces behind `ANTHROPIC_API_KEY` — with a 10/10 retrieval-accuracy check (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering)). The platform pieces (auth, Postgres, gateway) are on the [roadmap](#roadmap).
+> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache and Kafka event publishing all work — the LLM pieces behind `ANTHROPIC_API_KEY` — with a 10/10 retrieval-accuracy check (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). Full cost/observability instrumentation is still a design, not code — see [Production readiness](#production-readiness).
 
 <!-- TODO: demo GIF -->
 
@@ -16,8 +16,10 @@
 - Agentic RAG (DeepAgents) with Pydantic-validated structured output
 - LLM-as-a-judge script (`evals/judge.py`) grading real pipeline answers against a reference
 - Upload Excel, CSV, Markdown and PDF files, ingested through LlamaIndex
+- JWT auth (register/login/me), Postgres-backed chat history, audit log and ingestion job tracking
+- Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
 - Tracing (Langfuse) and evals (DeepEval, 25 golden questions)
-- Planned: user auth, agent actions (change data, analysis and plots), cost budgets, release gates, LLM-as-a-judge and a full audit trail — see [Production readiness](#production-readiness)
+- Planned: agent actions (change data, analysis and plots), cost budgets, release gates and full observability instrumentation — see [Production readiness](#production-readiness)
 
 ## Architecture
 
@@ -72,20 +74,21 @@ flowchart LR
 
 ## Quickstart
 
-No Docker. You need [uv](https://docs.astral.sh/uv/) (installs Python 3.12 itself), Node 18+ and [Neo4j](https://neo4j.com/) installed locally. Milvus runs embedded (Milvus Lite) from a local file, so there is nothing to install for it.
+No Docker. You need [uv](https://docs.astral.sh/uv/) (installs Python 3.12 itself), Node 18+, and [Neo4j](https://neo4j.com/), [PostgreSQL](https://www.postgresql.org/), [Redis](https://redis.io/) and [Kafka](https://kafka.apache.org/) installed locally — all via Homebrew, all run as background services, the same pattern throughout this project. Milvus runs embedded (Milvus Lite) from a local file, so there is nothing to install for it.
 
 ```bash
-brew install neo4j                                  # once; needs a JDK, Homebrew pulls one in
-neo4j-admin dbms set-initial-password rivet-dev-password   # once, before the first start
-make neo4j                                          # start Neo4j as a background service
-make install                                        # uv sync + npm install
-make ingest                                         # load source_data/ into Milvus and Neo4j
-make dev                                            # API http://localhost:8000 (docs at /docs) and UI http://localhost:5173
+brew install neo4j postgresql@16 redis kafka         # once; neo4j and kafka need a JDK, Homebrew pulls one in
+neo4j-admin dbms set-initial-password rivet-dev-password   # once, before Neo4j's first start
+createuser -s rivet && createdb -O rivet rivet        # once, creates the app's Postgres role + database
+make platform                                        # start neo4j, postgres, redis and kafka as background services
+make install                                         # uv sync + npm install
+make ingest                                          # load source_data/ into Milvus and Neo4j
+make dev                                             # API http://localhost:8000 (docs at /docs) and UI http://localhost:5173
 ```
 
-Connection settings live in `.env` (copy `.env.example`); the defaults match the commands above. `make test lint` runs the checks.
+Connection settings live in `.env` (copy `.env.example`); the defaults match the commands above. Postgres tables are created automatically on startup (`Base.metadata.create_all`, not a migration tool — see `src/db/models.py`). `make test lint` runs the checks; the test suite never touches any of these services — see [Platform](#platform-auth-history-and-messaging).
 
-API: `POST /api/chat` with `{"session_id": "...", "message": "..."}` returns `{answer, citations[], trace[]}`. `/api/data/*` feeds the Data Management tab. `POST /api/files` ingests an uploaded file (see [Uploading files](#uploading-files)). `/api/auth/*` returns 501 until implemented.
+API: `POST /api/chat` with `{"session_id": "...", "message": "..."}` returns `{answer, citations[], trace[]}`. `/api/data/*` feeds the Data Management tab. `POST /api/files` ingests an uploaded file (see [Uploading files](#uploading-files)). `/api/auth/register`, `/login` and `/me` handle JWT auth (see [Platform](#platform-auth-history-and-messaging)).
 
 ## Sample data
 
@@ -142,9 +145,20 @@ $ make eval
 
 Both scripts are hand-rolled precursors to the "DeepEval, 25 golden questions" Phase 4 item — same idea, smaller and framework-free.
 
+## Platform: auth, history and messaging
+
+Phase 3. No stub/real split here — unlike the LLM pipeline stages, there's no meaningful "fake Postgres"; these pieces are real whenever the app runs, and are each written to degrade gracefully rather than need a flag.
+
+- **Auth** (`src/auth/`, `POST /api/auth/register`, `/login`, `GET /me`) — email/password with Argon2 hashing (`passlib`), stateless JWTs (`pyjwt`, `JWT_SECRET`/`JWT_TTL_MINUTES` in `.env`). `/api/chat` and `/api/files` accept an optional `Authorization: Bearer` header — logged-in activity is attributed to the user, anonymous requests still work exactly as before. No server-side session store: a stateless JWT needs none, which is why Redis's role here is caching, not sessions, despite "Redis (cache, sessions)" in the architecture diagram.
+- **Postgres** (`src/db/`, four tables — see `models.py`) — `users`; `chat_history` (one row per exchange, what a signed-in user could see of their own past chats); `chat_audit_log` (append-only, only ever stores the PII-*masked* question, richer fields than `chat_history`: outcome, sources queried, duration); `ingestion_jobs` (one row per `/api/files` upload, including failures). Tables are created with `Base.metadata.create_all` on startup, not Alembic migrations — the simpler, demo-appropriate choice.
+- **Redis** (`src/clients/redis.py`) — `/api/chat` caches a response by a hash of the PII-masked question (keyed to the current `USE_STUBS`/`ANTHROPIC_API_KEY` mode, so switching modes never serves a stale-mode answer), TTL `RESPONSE_CACHE_TTL_SECONDS` (default 300s). A cache hit skips the whole pipeline — in `chat_audit_log`, `outcome="success_cached"` with `duration_ms=0` marks it.
+- **Kafka** (`src/clients/kafka.py`) — publishes a `rivet.chat.completed` event (session, user, citation count, sources queried, duration) after every successful, non-cached chat response. Fire-and-forget: the HTTP response doesn't wait on it.
+
+**All four of these are best-effort on the request path** — Postgres writes, the Redis cache, and the Kafka publish are each wrapped so a failure is logged and swallowed, never raised. A `/api/chat` call degrades to "no history/cache/event for this one request," it never 500s because a platform service is down; verified by pointing all three at unreachable hosts and confirming chat still returns 200. The *test suite* never talks to a live Postgres/Redis/Kafka at all: `tests/conftest.py`'s `db_session` fixture swaps in a real, in-memory SQLite database (genuine CRUD behavior, no live Postgres needed), and Kafka publishing is autouse-mocked for every test — the first version of that mock was itself a bug fix: a module-cached `AIOKafkaProducer`, once started inside one `pytest-asyncio` test's event loop, hangs forever if a later test (its own, different event loop) reuses it. Invisible in production, where uvicorn keeps one event loop for the app's whole life; see `tests/conftest.py` for the full story.
+
 ## Production readiness
 
-Design targets for cost, quality and observability, tracked in the [roadmap](#roadmap) (Phase 4). Real retrieval, routing and answering all exist now (see above), but the cost accounting, release-gate enforcement, alerting and audit log described below don't yet — nothing currently measures or enforces the numbers in this section. They're starting points to retune once there's real traffic and real measurement.
+Design targets for cost, quality and observability, tracked in the [roadmap](#roadmap) (Phase 4). Real retrieval, routing, answering and the Phase 3 platform pieces all exist now (see above); a bare-bones `chat_audit_log` is real too (see below). What's still a design, not code: per-call cost accounting, release-gate enforcement, alerting, and the richer trace field set. Nothing currently measures or enforces the numbers in this section — they're starting points to retune once there's real traffic and real measurement.
 
 ### Cost controls (tokenomics)
 
@@ -218,7 +232,7 @@ Golden-string matching — what `evals/check_retrieval.py` does — only works f
 | `keywords`, `num_nodes_matched`                        | graph retrieve  | the generated Cypher's keyword list and match count                              |
 | `error`                                                  | any             | category + message; the full stack trace goes to logs, not the user-facing trace |
 
-**Audit log** — append-only (Postgres `chat_audit_log`, once Phase 3 lands), one row per request, 90-day retention. Only `question_masked` is stored, never the raw question — the audit trail must not become a second place PII leaks from.
+**Audit log** — append-only Postgres `chat_audit_log` is real (see [Platform](#platform-auth-history-and-messaging)), one row per request. It only stores `question_masked`, never the raw question — the audit trail must not become a second place PII leaks from. What's still a design, not code: 90-day retention (no expiry job runs yet), and the richer field set below (tokens, cost, cache state) — today's table has `session_id`, `user_id`, `question_masked`, `answer`, `sources_queried`, `citations_count`, `outcome`, `duration_ms`.
 
 **Alert conditions**:
 
@@ -247,11 +261,13 @@ src/                     backend (FastAPI), imported as `src.*`
   pipeline/parsing/      real request parser: router.py (LangChain + Claude, structured output)
   pipeline/answering/    real answerer: agent.py (DeepAgents + Claude, Pydantic-validated output)
   ingestion/             LlamaIndex loaders (md/csv/xlsx/pdf), embeddings, embed+upsert pipeline
-  clients/               Milvus (Lite) session and Neo4j driver
+  auth/                  password hashing (Argon2) and JWT issuance/verification
+  db/                    SQLAlchemy models (users, chat_history, chat_audit_log, ingestion_jobs), async engine
+  clients/               Milvus (Lite) session, Neo4j driver, Redis client, Kafka producer
   guardrails/            input.py (prompt-injection blocklist), pii.py (regex PII masking, always on)
   schemas/               Pydantic request/response models
   core/                  logging, error handling
-  db/ observability/     placeholders for Postgres, Langfuse
+  observability/         placeholder for Langfuse
 utils/                   CLI: bulk-load source_data/ and manual uploads into Milvus and Neo4j
 evals/                   golden_questions.json, a live retrieval-accuracy check, and an LLM-as-a-judge script
 source_data/             sample data (vector_data/, graph_data/) and an HTML viewer
@@ -287,9 +303,9 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 
 **Phase 3: Platform**
 
-- [ ] User auth
-- [ ] PostgreSQL for users, chat history, ingestion progress and the audit trail (`chat_audit_log`)
-- [ ] API gateway with Kafka (async messaging) and Redis (cache, sessions)
+- [X] User auth
+- [X] PostgreSQL for users, chat history, ingestion progress and the audit trail (`chat_audit_log`)
+- [X] Kafka (async messaging) and Redis (cache) — see [Platform](#platform-auth-history-and-messaging) for scope (an event publisher and a response cache, not a separate gateway service)
 - [ ] Docker packaging of the full stack (postponed)
 
 **Phase 4: Quality and polish** — see [Production readiness](#production-readiness) for the full design
