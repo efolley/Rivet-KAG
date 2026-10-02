@@ -1,8 +1,10 @@
 """DeepAgents-based answerer: synthesizes a grounded answer from retrieved context, with
 Pydantic-structured output (the answer text, which citations were used, and a confidence
-rating). Requires ANTHROPIC_API_KEY; the factory falls back to StubAnswerer without one, and
-this class falls back the same way if a call fails, so a bad LLM response never breaks a chat
-request — the citations found by retrieval are still shown even if synthesis fails.
+rating). `settings.llm_provider` picks the model backend (Anthropic, OpenAI or a local Ollama
+server); the factory falls back to StubAnswerer when the selected provider has no usable
+credentials, and this class falls back the same way if a call fails, so a bad LLM response
+never breaks a chat request — the citations found by retrieval are still shown even if
+synthesis fails.
 """
 
 import logging
@@ -10,6 +12,8 @@ from typing import Literal
 
 from deepagents import create_deep_agent
 from langchain_anthropic import ChatAnthropic
+from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr
 
 from src.config import Settings
@@ -48,16 +52,35 @@ def _fallback_answer(context: list[Citation]) -> str:
     return "I found some relevant information but could not generate a full answer:\n\n" + _format_context(context)
 
 
+def _build_model(settings: Settings) -> ChatAnthropic | ChatOpenAI | ChatOllama:
+    if settings.llm_provider == "openai":
+        return ChatOpenAI(
+            model=settings.llm_model,
+            api_key=SecretStr(settings.openai_api_key),
+            temperature=0,
+            max_completion_tokens=1024,
+            timeout=30,
+        )
+    if settings.llm_provider == "ollama":
+        return ChatOllama(
+            model=settings.llm_model,
+            base_url=settings.ollama_host,
+            temperature=0,
+            num_predict=1024,
+        )
+    return ChatAnthropic(
+        model_name=settings.llm_model,
+        api_key=SecretStr(settings.anthropic_api_key),
+        temperature=0,
+        max_tokens_to_sample=1024,
+        timeout=30,
+        stop=None,
+    )
+
+
 class DeepAgentAnswerer:
     def __init__(self, settings: Settings) -> None:
-        model = ChatAnthropic(
-            model_name=settings.llm_model,
-            api_key=SecretStr(settings.anthropic_api_key),
-            temperature=0,
-            max_tokens_to_sample=1024,
-            timeout=30,
-            stop=None,
-        )
+        model = _build_model(settings)
         self._agent = create_deep_agent(model=model, system_prompt=SYSTEM_PROMPT, response_format=AgentAnswer)
 
     async def answer(self, query: str, context: list[Citation]) -> str:

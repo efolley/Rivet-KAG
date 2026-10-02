@@ -86,7 +86,7 @@ Every LLM- or database-backed pipeline stage has a stub and a real implementatio
 |---|---|---|---|
 | Retrieval (vector, graph) | `StubVectorRetriever`, `StubGraphRetriever` — canned citations | `MilvusRetriever`, `Neo4jRetriever` | `USE_STUBS=false` |
 | Parse / route | `StubParser` — always queries both sources | `LangChainRouter` | `ANTHROPIC_API_KEY` set |
-| Answer | `StubAnswerer` — canned text | `DeepAgentAnswerer` | `ANTHROPIC_API_KEY` set |
+| Answer | `StubAnswerer` — canned text | `DeepAgentAnswerer` | `LLM_PROVIDER`-specific credentials (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/always-true for `ollama`) |
 | PII masking | *(none — always real)* | `RegexPIIMasker` | always |
 
 Two independent gates, not one: retrieval needs *databases*, the LLM stages need *credentials* —
@@ -160,7 +160,11 @@ make judge       # live LLM-as-a-judge run — needs ANTHROPIC_API_KEY, costs re
   (`dataclass_transform`) synthesis, so mypy's synthesized constructor wants kwargs by their
   pydantic **alias**, not the Python field name — `model_name=`, not `model=`; `max_tokens_to_sample=`,
   not `max_tokens=`; `api_key=SecretStr(...)`, not a plain `str`. Works at runtime either way; only
-  mypy enforces the alias form.
+  mypy enforces the alias form. **`ChatOpenAI` (langchain-openai) is the opposite**: mypy wants the
+  plain field name, not the alias — `model=`, not `model_name=`; `max_completion_tokens=`, not
+  `max_tokens=`. `ChatOllama` (langchain-ollama) has no aliasing at all (`model=`, `base_url=`,
+  `num_predict=` all match the field names) and no `timeout=` kwarg. Check `model_fields[...].alias`
+  per class before trusting either convention to carry over.
 - **`MarkdownReader.parse_tups()` (LlamaIndex)** only starts a new chunk when a heading *level*
   repeats, not on every heading — it silently merges a document's first section into its title.
   Don't use it for "one chunk per heading"; split markdown directly instead (see

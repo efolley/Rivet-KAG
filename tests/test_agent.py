@@ -1,14 +1,17 @@
 """Mini test suite for the DeepAgents answerer: extracting text from its Pydantic-structured
-output, falling back when that structure can't be trusted, and that the schema itself really
-validates. The agent's `ainvoke` call is mocked, so no ANTHROPIC_API_KEY or network access is
-needed.
+output, falling back when that structure can't be trusted, that the schema itself really
+validates, and that llm_provider picks the right model backend / credential gate. The agent's
+`ainvoke` call is mocked, so no API key or network access is needed.
 """
 
 import pytest
+from langchain_anthropic import ChatAnthropic
+from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 
 from src.config import Settings
-from src.pipeline.answering.agent import AgentAnswer, DeepAgentAnswerer
+from src.pipeline.answering.agent import AgentAnswer, DeepAgentAnswerer, _build_model
 from src.pipeline.factory import build_pipeline
 from src.schemas import Citation
 
@@ -80,3 +83,33 @@ def test_factory_selects_deep_agent_answerer_only_with_api_key() -> None:
 
     assert type(without_key._answerer).__name__ == "StubAnswerer"
     assert type(with_key._answerer).__name__ == "DeepAgentAnswerer"
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_type"),
+    [
+        ("anthropic", ChatAnthropic),
+        ("openai", ChatOpenAI),
+        ("ollama", ChatOllama),
+    ],
+)
+def test_build_model_picks_backend_from_llm_provider(provider: str, expected_type: type) -> None:
+    settings = Settings(
+        llm_provider=provider,  # type: ignore[arg-type]
+        anthropic_api_key="sk-ant-fake-test-key",
+        openai_api_key="sk-fake-test-key",
+    )
+    assert isinstance(_build_model(settings), expected_type)
+
+
+def test_factory_falls_back_to_stub_for_openai_without_a_key() -> None:
+    without_key = build_pipeline(Settings(llm_provider="openai", openai_api_key=""))
+    with_key = build_pipeline(Settings(llm_provider="openai", openai_api_key="sk-fake-test-key"))
+
+    assert type(without_key._answerer).__name__ == "StubAnswerer"
+    assert type(with_key._answerer).__name__ == "DeepAgentAnswerer"
+
+
+def test_factory_uses_real_answerer_for_ollama_with_no_key_needed() -> None:
+    pipeline = build_pipeline(Settings(llm_provider="ollama"))
+    assert type(pipeline._answerer).__name__ == "DeepAgentAnswerer"

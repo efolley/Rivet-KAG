@@ -1,7 +1,10 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LLMProvider = Literal["anthropic", "openai", "ollama"]
 
 
 class Settings(BaseSettings):
@@ -19,8 +22,11 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "rivet-dev-password"
 
+    llm_provider: LLMProvider = "anthropic"  # picks the answerer's model backend; parser/router stays Anthropic-only
     llm_model: str = "claude-sonnet-5"
     anthropic_api_key: str = ""  # set to switch the parser/router and answerer from stub to real
+    openai_api_key: str = ""  # required when llm_provider=openai
+    ollama_host: str = "http://localhost:11434"  # local server, no key needed, when llm_provider=ollama
 
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
