@@ -134,6 +134,7 @@ make install     # uv sync + npm install
 make platform    # start neo4j, postgres, redis and kafka (brew services), once
 make ingest      # load source_data/ into Milvus + Neo4j
 make dev         # API on :8000 + UI on :5173
+make up          # routine dev: platform (if not running) + wait for ports + dev, one command
 make lint        # ruff + mypy (src, utils, evals, tests) + tsc --noEmit
 make test        # pytest — fast, offline, CI-safe, never touches a live service
 make eval        # live retrieval-accuracy check against the real databases
