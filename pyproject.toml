@@ -26,6 +26,7 @@ dependencies = [
   "redis>=5.0",
   "aiokafka>=0.11",
   "email-validator>=2.0",
+  "langfuse>=2.0",
 ]
 
 [dependency-groups]
@@ -37,7 +38,6 @@ default-groups = ["dev", "ingest"]
 
 [project.optional-dependencies]
 # Enable as each integration lands:
-# rag = ["langchain", "deepagents", "langfuse"]
 # eval = ["deepeval"]
 
 [build-system]

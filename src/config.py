@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""  # required when llm_provider=openai
     ollama_host: str = "http://localhost:11434"  # local server, no key needed, when llm_provider=ollama
 
+    # Local-only: src/clients/langfuse.py refuses any non-loopback host, so this can never
+    # point at Langfuse Cloud regardless of what's set here.
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""

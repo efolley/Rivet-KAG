@@ -2,7 +2,7 @@
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
 
-> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache and Kafka event publishing all work — the LLM pieces behind `ANTHROPIC_API_KEY` — with a 10/10 retrieval-accuracy check (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). Full cost/observability instrumentation is still a design, not code — see [Production readiness](#production-readiness).
+> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing and local-only Langfuse tracing all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 10/10 retrieval-accuracy check (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). Full cost instrumentation and the richer trace field set are still a design, not code — see [Production readiness](#production-readiness).
 
 <!-- TODO: demo GIF -->
 
@@ -18,8 +18,8 @@
 - Upload Excel, CSV, Markdown and PDF files, ingested through LlamaIndex
 - JWT auth (register/login/me), Postgres-backed chat history, audit log and ingestion job tracking
 - Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
-- Tracing (Langfuse) and evals (DeepEval, 25 golden questions)
-- Planned: agent actions (change data, analysis and plots), cost budgets, release gates and full observability instrumentation — see [Production readiness](#production-readiness)
+- Local-only Langfuse tracing (never Langfuse Cloud) and evals (`make eval`, `make judge`; DeepEval is still planned)
+- Planned: agent actions (change data, analysis and plots), cost budgets, release gates and the richer trace field set — see [Production readiness](#production-readiness)
 
 ## Architecture
 
@@ -213,30 +213,22 @@ Golden-string matching — what `evals/check_retrieval.py` does — only works f
 
 ### Observability and audit trail
 
-**Per-request trace** (Langfuse; today there's only an implicit FastAPI log line in `orchestrator.py`):
+**Langfuse tracing is implemented and local-only** (`src/clients/langfuse.py`, wired into `Pipeline.run()` in `src/pipeline/orchestrator.py`). `_is_local()` refuses any host that isn't `localhost`/`127.0.0.1` — it will never send a trace to Langfuse Cloud, regardless of `LANGFUSE_HOST`. There's no bundled local Langfuse server (self-hosting it needs Postgres + ClickHouse + Redis + object storage, which doesn't fit this project's brew-services-only platform story — see `CLAUDE.md`'s "Stack and why"); run your own self-hosted instance to see traces (https://langfuse.com/self-hosting). Without one, every span attempt fails to connect and is logged as a warning by Langfuse's own exporter — same "best-effort, never breaks the request" treatment as Postgres/Redis/Kafka (see [Platform](#platform-auth-history-and-messaging)): `traced_span()` degrades to a no-op context manager (`_NullSpan`) whenever the client is absent or a call fails, verified by `tests/test_tracing.py`.
 
-| Field                                                                                             | Description                                                         |
-| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `request_id` / `session_id`                                                                   | correlates with the existing API log line                           |
-| `question_masked`                                                                               | the PII-masked question —`question_raw` is never persisted       |
-| `answer`, `citations[]`                                                                       | what the user saw                                                   |
-| `sources_queried`, `intent`                                                                   | which of vector/graph the router picked, and why                    |
-| `total_latency_ms`, `total_cost_usd`                                                          | sum of the per-stage fields below                                   |
-| `total_input_tokens`, `total_output_tokens`, `cache_read_tokens`, `cache_creation_tokens` |                                                                     |
-| `outcome`                                                                                       | `success` / `fallback_used` / `guardrail_blocked` / `error` |
-| `guardrail_violations[]`                                                                        | which check tripped, if any                                         |
+**Per-request trace** (one root span per `Pipeline.run()` call, `as_type="chain"`) — implemented fields:
 
-**Per-stage trace** (extends `StageTrace` in `src/schemas/chat.py`, which today only carries `name`/`detail`/`duration_ms`):
+| Field                                     | Description                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------------ |
+| `session_id`                             | set in metadata at span start and again on every update                  |
+| `input`                                  | the PII-masked question — set only after the "pii" stage, never `req.message` directly, so `question_raw` never reaches the trace |
+| `output`                                  | the final answer text                                                    |
+| `sources_queried`, `intent`            | which of vector/graph were queried, and the router's intent classification |
+| `citations_count`                        |                                                                          |
+| `outcome`                                 | `success` / `guardrail_blocked` / `error`                          |
 
-| Field                                                      | Applies to      | Description                                                                      |
-| ---------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------- |
-| `model`                                                  | parse, answer   | which model actually served the call (post-fallback)                             |
-| `input_tokens`, `output_tokens`, `cache_read_tokens` | parse, answer   | from`response.usage`                                                           |
-| `cost_usd`                                               | parse, answer   | tokens × the model's per-token price                                            |
-| `fallback_triggered`                                     | parse           | true when the router fell back to querying both sources                          |
-| `query_used`, `num_results`, `top_score`             | vector retrieve |                                                                                  |
-| `keywords`, `num_nodes_matched`                        | graph retrieve  | the generated Cypher's keyword list and match count                              |
-| `error`                                                  | any             | category + message; the full stack trace goes to logs, not the user-facing trace |
+Not yet implemented (needs the pending cost-accounting work — see [Cost controls](#cost-controls-tokenomics)): `total_latency_ms`/`total_cost_usd` as distinct rollup fields (the per-stage `duration_ms` values are there, just not pre-summed), token counts, and a `fallback_used` outcome value (the router/answerer's own fallback is logged but not yet surfaced into this field).
+
+**Per-stage trace** (one child span per `timed()` call in the orchestrator, automatically nested under the request's root span via Langfuse's OTel context) — implemented: `name`, `detail` (as metadata), `duration_ms` (as output) — exactly what `StageTrace` in `src/schemas/chat.py` already carries, nothing invented. Not yet implemented: `model`, `input_tokens`/`output_tokens`/`cache_read_tokens`, `cost_usd`, `fallback_triggered`, `query_used`/`num_results`/`top_score`, `keywords`/`num_nodes_matched`, `error` detail — these need either the pending cost-accounting work or widening the `Retriever`/`RequestParser` protocols to expose more than they return today.
 
 **Audit log** — append-only Postgres `chat_audit_log` is real (see [Platform](#platform-auth-history-and-messaging)), one row per request. It only stores `question_masked`, never the raw question — the audit trail must not become a second place PII leaks from. What's still a design, not code: 90-day retention (no expiry job runs yet), and the richer field set below (tokens, cost, cache state) — today's table has `session_id`, `user_id`, `question_masked`, `answer`, `sources_queried`, `citations_count`, `outcome`, `duration_ms`.
 
@@ -316,7 +308,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 
 **Phase 4: Quality and polish** — see [Production readiness](#production-readiness) for the full design
 
-- [ ] Langfuse tracing with the per-request/per-stage field set
+- [X] Langfuse tracing, local-only, with the per-request/per-stage fields buildable from what the pipeline returns today (token/cost/model fields wait on the item below)
 - [ ] Per-stage cost accounting (`response.usage` → `cost_usd`) and the $0.15/inspection budget, with pre-flight `count_tokens` rejection
 - [ ] Prompt caching for the answerer's system prompt and tool schemas
 - [ ] DeepEval with 30 golden questions, including LLM-as-a-judge (`GEval`, `FaithfulnessMetric`)
@@ -324,9 +316,12 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 - [ ] Alerting on the conditions in [Observability and audit trail](#observability-and-audit-trail)
 - [ ] Demo GIF
 
-**ToDo next**
+**ToDo**
 
 - [ ] Agent actions: change data, analysis and plots
+- [ ] Tokenomics
+- [ ] Guardrails/hooks
+- [ ] Model routing
 
 ## License
 

@@ -3,12 +3,13 @@
 Guidance for whoever (human or agent) develops in this repo next. `README.md` is for people using
 or evaluating Rivet KAG; this file is for people changing it.
 
-## Current progress (as of 2026-10-02)
+## Current progress (as of 2026-10-03)
 
-**Branch:** work is on `feat/phase_3`, pushed to `origin/feat/phase_3` (commit `db069db`), **not
-merged to `main`** and no PR opened yet — `main` is still at `80932a0` (Production readiness
-docs). Decide whether to open a PR or merge directly before starting new work, rather than
-stacking further commits on an unreviewed branch by default.
+**Branch:** work is on `dev`, branched off `feat/phase_3` and pushed to `origin/dev`. Three
+branches are now in flight — `main` (`80932a0`), `feat/phase_3` (unmerged, pushed), `dev`
+(unmerged, pushed, branched from `feat/phase_3`) — none merged into another yet. Decide how to
+reconcile this chain (PRs, squash, etc.) before starting new work, rather than stacking further
+commits by default.
 
 **Done, in order** (each phase's README roadmap checkboxes are the source of truth — grep
 `^## Roadmap` there for the exact state):
@@ -24,10 +25,29 @@ stacking further commits on an unreviewed branch by default.
   unmerged**. See the README's "Platform: auth, history and messaging" section for what's real.
   Docker packaging stays explicitly postponed (not a gap to fill).
 
-**Not started:** Phase 4 (Langfuse tracing, per-call cost accounting, prompt caching, the full
-DeepEval suite, release gates, alerting, demo GIF) and the "Agent actions" backlog item. The
-"Production readiness" section of the README is a *design*, not code, for all of this — don't
-assume anything there is implemented without checking.
+**Not started:** most of Phase 4 (per-call cost accounting, prompt caching, the full DeepEval
+suite, release gates, alerting, demo GIF) and the "Agent actions" backlog item. The "Production
+readiness" section of the README is a *design*, not code, for what's still missing — don't assume
+anything there is implemented without checking.
+
+**Done on `dev` (2026-10-03):**
+- **Local-only Langfuse tracing** — `src/clients/langfuse.py` + `Pipeline.run()` in
+  `src/pipeline/orchestrator.py`. Hard-guarded to loopback hosts only (`_is_local()`); never
+  talks to Langfuse Cloud regardless of `LANGFUSE_HOST`. No bundled local Langfuse server —
+  self-hosting it needs Postgres+ClickHouse+Redis+object storage, out of scope here; without one
+  running, every span attempt fails to connect and is swallowed exactly like a Postgres/Redis/
+  Kafka outage (best-effort, never breaks the request — see `tests/test_tracing.py`). Implements
+  the per-request/per-stage fields buildable from what the pipeline returns today; token/cost/
+  model fields wait on the cost-accounting item below (see README's "Observability and audit
+  trail" for the exact field-by-field state).
+- **Per-request model picker** — `GET /api/models` serves a small catalog (1-2 cheap models per
+  provider); `ChatRequest.llm_provider`/`llm_model` override the server default per request,
+  resolved through a pipeline cached per (provider, model) pair (`src/api/deps.py`).
+- **Fixed `DeepAgentAnswerer` silently dropping a model's real answer** whenever DeepAgents'
+  `structured_response` extraction failed (common with smaller models not reliably tool-calling
+  for structured output) — it now recovers the agent's final plain-text message first. Confirmed
+  `llama3.2:latest` answers one question wrong regardless of this fix (a model-quality issue, not
+  a code bug); `.env`'s local default moved to `qwen2.5:14b`, which answers it correctly.
 
 **Live-tested on 2026-10-02** (platform services up via `make platform`, `.env` with
 `USE_STUBS=false`): `make ingest` and `make eval` both ran clean — **10/10 live retrieval
