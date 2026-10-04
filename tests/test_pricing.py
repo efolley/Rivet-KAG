@@ -1,11 +1,19 @@
 """Mini test suite for per-token pricing: cost math, the unknown-model "None, not $0" contract,
-and extracting TokenUsage from a langchain AIMessage's usage_metadata.
+extracting TokenUsage from a langchain AIMessage's usage_metadata, and the batch-job circuit
+breaker (the job-level counterpart to the per-request pre-flight budget).
 """
 
 import pytest
 from langchain_core.messages import AIMessage
 
-from src.pipeline.pricing import PARSE_BUDGET_USD, TokenUsage, cost_usd, usage_from_ai_message
+from src.pipeline.pricing import (
+    PARSE_BUDGET_USD,
+    BatchBudget,
+    BudgetExceededError,
+    TokenUsage,
+    cost_usd,
+    usage_from_ai_message,
+)
 
 
 def test_cost_usd_matches_the_readme_cost_table_for_a_known_model() -> None:
@@ -52,3 +60,27 @@ def test_usage_from_ai_message_defaults_to_zero_without_usage_metadata() -> None
 
 def test_parse_budget_is_consistent_with_the_readme_cost_table() -> None:
     assert PARSE_BUDGET_USD == pytest.approx(0.01)
+
+
+def test_batch_budget_ignores_unknown_cost() -> None:
+    budget = BatchBudget(limit_usd=1.0)
+    budget.add(None)
+    assert budget.spent_usd == 0.0
+    budget.check()  # must not raise
+
+
+def test_batch_budget_accumulates_and_trips_past_the_limit() -> None:
+    budget = BatchBudget(limit_usd=1.0)
+    budget.add(0.4)
+    budget.add(0.4)
+    budget.check()  # 0.8, still under -- must not raise
+
+    budget.add(0.4)  # 1.2, now over
+    with pytest.raises(BudgetExceededError):
+        budget.check()
+
+
+def test_batch_budget_exactly_at_the_limit_does_not_trip() -> None:
+    budget = BatchBudget(limit_usd=1.0)
+    budget.add(1.0)
+    budget.check()  # must not raise -- only strictly over trips it

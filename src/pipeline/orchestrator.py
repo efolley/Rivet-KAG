@@ -41,7 +41,11 @@ class Pipeline:
         self._retrievers = {r.source: r for r in retrievers}
         self._answerer = answerer
 
-    async def run(self, req: ChatRequest) -> ChatResponse:
+    async def run(self, req: ChatRequest, max_answer_cost_usd: float | None = None) -> ChatResponse:
+        # max_answer_cost_usd overrides the answerer's default per-request budget for this one
+        # call -- used by the session-level circuit breaker (src/api/routes/chat.py), which
+        # passes 0.0 once a session is already over its rolling daily cap. None (the default)
+        # means "use the stage's own default budget", unaffected.
         # Per-request/per-stage Langfuse tracing (local only -- see src/clients/langfuse.py).
         # The root span's `input` is set only after the "pii" stage below, never from
         # req.message directly: question_raw must never reach the trace, matching the
@@ -100,7 +104,9 @@ class Pipeline:
                     asyncio.gather(*(r.retrieve(plan.query) for r in selected)),
                 )
                 context = merge_context(list(results))
-                answer_result = await timed_llm("answer", "agentic RAG", self._answerer.answer(plan.query, context))
+                answer_result = await timed_llm(
+                    "answer", "agentic RAG", self._answerer.answer(plan.query, context, max_answer_cost_usd)
+                )
             except Exception:
                 root.update(metadata={"session_id": req.session_id, "outcome": "error"})
                 raise

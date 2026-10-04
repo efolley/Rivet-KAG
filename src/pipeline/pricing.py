@@ -17,6 +17,10 @@ PARSE_BUDGET_USD = 0.01
 ANSWER_BUDGET_USD = 0.12
 TOTAL_BUDGET_USD = 0.15
 
+# Job-level limits, one level up from the per-request budget above.
+SESSION_DAILY_BUDGET_USD = 1.00  # per session_id, rolling 24h -- see src/api/routes/chat.py
+BATCH_JOB_BUDGET_USD = 5.00  # per evals/ script run -- see BatchBudget below
+
 
 @dataclass(frozen=True)
 class ModelPrice:
@@ -74,3 +78,30 @@ def cost_usd(model: str, usage: TokenUsage) -> float | None:
     cost += (usage.cache_read_tokens / 1_000_000) * price.input_per_mtok * 0.1
     cost += (usage.output_tokens / 1_000_000) * price.output_per_mtok
     return round(cost, 6)
+
+
+class BudgetExceededError(RuntimeError):
+    """Raised by BatchBudget.check() once a batch job's cumulative spend crosses its limit --
+    a hard circuit breaker: the job stops immediately mid-run rather than degrading silently
+    (see README's "Job-level limits")."""
+
+
+@dataclass
+class BatchBudget:
+    """Tracks cumulative spend across a batch job (evals/judge.py, evals/deepeval_suite.py,
+    evals/release_gates.py) in-process -- unlike the per-request budget, there's no live traffic
+    to persist this against, so it only needs to live for the duration of one script run."""
+
+    limit_usd: float = BATCH_JOB_BUDGET_USD
+    spent_usd: float = 0.0
+
+    def add(self, cost: float | None) -> None:
+        if cost is not None:
+            self.spent_usd += cost
+
+    def check(self) -> None:
+        if self.spent_usd > self.limit_usd:
+            raise BudgetExceededError(
+                f"Batch job spend ${self.spent_usd:.4f} exceeded the ${self.limit_usd:.2f} budget "
+                f"(BATCH_JOB_BUDGET_USD); stopping mid-run rather than continuing to spend."
+            )

@@ -74,6 +74,71 @@ async def test_chat_records_total_cost_usd_in_the_audit_log(db_session: AsyncSes
     assert row.cost_usd == r.json()["total_cost_usd"]
 
 
+async def test_chat_forces_a_free_response_when_the_session_is_over_its_daily_cap(
+    monkeypatch: pytest.MonkeyPatch, db_session: AsyncSession
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_spend(db: object, session_id: str) -> float:
+        return 5.00  # above SESSION_DAILY_BUDGET_USD ($1.00)
+
+    async def fake_run(self: object, req: object, max_answer_cost_usd: float | None = None) -> ChatResponse:
+        captured["max_answer_cost_usd"] = max_answer_cost_usd
+        return ChatResponse(answer="ok", citations=[], trace=[])
+
+    monkeypatch.setattr("src.api.routes.chat._session_spend_24h", fake_spend)
+    monkeypatch.setattr("src.pipeline.orchestrator.Pipeline.run", fake_run)
+
+    r = client.post("/api/chat", json={"session_id": "over-budget", "message": "any question"})
+
+    assert r.status_code == 200
+    assert captured["max_answer_cost_usd"] == 0.0
+
+
+async def test_chat_uses_the_default_budget_when_the_session_is_under_its_cap(
+    monkeypatch: pytest.MonkeyPatch, db_session: AsyncSession
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_spend(db: object, session_id: str) -> float:
+        return 0.02  # well under SESSION_DAILY_BUDGET_USD
+
+    async def fake_run(self: object, req: object, max_answer_cost_usd: float | None = None) -> ChatResponse:
+        captured["max_answer_cost_usd"] = max_answer_cost_usd
+        return ChatResponse(answer="ok", citations=[], trace=[])
+
+    monkeypatch.setattr("src.api.routes.chat._session_spend_24h", fake_spend)
+    monkeypatch.setattr("src.pipeline.orchestrator.Pipeline.run", fake_run)
+
+    r = client.post("/api/chat", json={"session_id": "under-budget", "message": "any question"})
+
+    assert r.status_code == 200
+    assert captured["max_answer_cost_usd"] is None
+
+
+async def test_chat_does_not_block_when_session_spend_cannot_be_checked(
+    monkeypatch: pytest.MonkeyPatch, db_session: AsyncSession
+) -> None:
+    # None means "couldn't check" (e.g. Postgres down) -- must behave like "under budget", not
+    # like "over budget", so a platform outage can never cut off real users' answers.
+    captured: dict[str, object] = {}
+
+    async def fake_spend(db: object, session_id: str) -> None:
+        return None
+
+    async def fake_run(self: object, req: object, max_answer_cost_usd: float | None = None) -> ChatResponse:
+        captured["max_answer_cost_usd"] = max_answer_cost_usd
+        return ChatResponse(answer="ok", citations=[], trace=[])
+
+    monkeypatch.setattr("src.api.routes.chat._session_spend_24h", fake_spend)
+    monkeypatch.setattr("src.pipeline.orchestrator.Pipeline.run", fake_run)
+
+    r = client.post("/api/chat", json={"session_id": "unknown-budget", "message": "any question"})
+
+    assert r.status_code == 200
+    assert captured["max_answer_cost_usd"] is None
+
+
 async def test_publish_event_swallows_a_broken_producer(monkeypatch: pytest.MonkeyPatch) -> None:
     class BrokenProducer:
         async def start(self) -> None:

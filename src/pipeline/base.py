@@ -46,4 +46,12 @@ class AnswerResult:
 
 
 class Answerer(Protocol):
-    async def answer(self, query: str, context: list[Citation]) -> AnswerResult: ...
+    async def answer(
+        self, query: str, context: list[Citation], max_cost_usd: float | None = None
+    ) -> AnswerResult:
+        """`max_cost_usd` overrides the stage's own default pre-flight budget
+        (`pricing.ANSWER_BUDGET_USD`) for this one call; `None` means "use the default". Lets a
+        caller that already knows this request must stay free (e.g. a session over its daily
+        cap -- see src/api/routes/chat.py) force the existing budget-rejection fallback path by
+        passing `0.0`, rather than duplicating that fallback logic."""
+        ...

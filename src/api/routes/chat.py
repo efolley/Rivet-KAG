@@ -1,8 +1,10 @@
 import hashlib
 import logging
 import time
+from datetime import timedelta
 
 from fastapi import APIRouter
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import CurrentUserIdDep, DbSessionDep, SettingsDep, get_pipeline_for
@@ -11,6 +13,7 @@ from src.config import Settings
 from src.core.errors import GuardrailViolation
 from src.db import ChatAuditLog, ChatHistory
 from src.guardrails import mask_pii
+from src.pipeline.pricing import SESSION_DAILY_BUDGET_USD
 from src.schemas import ChatRequest, ChatResponse
 
 router = APIRouter(tags=["chat"])
@@ -78,6 +81,37 @@ async def _record(
         await db.rollback()
 
 
+async def _session_spend_24h(db: AsyncSession, session_id: str) -> float | None:
+    """Best-effort, like every other platform read on this path: `None` on any failure means
+    "can't check right now", which the caller treats as "don't block" -- a Postgres outage must
+    degrade this the same way it degrades history/audit logging, never the chat response itself.
+
+    The 24h cutoff is computed from the database's *own* current time (`SELECT now()`, then
+    subtracting the window in Python) rather than a Python-side `datetime.now()`, so it can never
+    disagree with whatever wrote `created_at` (`server_default=func.now()`) -- the exact bug this
+    sidesteps was caught live while building evals/check_alerts.py (see CLAUDE.md): a client
+    clock that disagreed with the Postgres server's by several hours silently returned zero rows.
+    """
+    try:
+        # Postgres's now() returns a tz-aware `timestamptz` value through asyncpg regardless of
+        # created_at's own (naive) column type -- confirmed live: asyncpg rejects the bind
+        # param outright ("can't subtract offset-naive and offset-aware datetimes") without the
+        # explicit strip below. SQLite (tests, via the db_session fixture) returns a naive
+        # value already, so .replace() is a no-op there.
+        server_now = (await db.execute(select(func.now()))).scalar_one().replace(tzinfo=None)
+        cutoff = server_now - timedelta(hours=24)
+        result = await db.execute(
+            select(func.sum(ChatAuditLog.cost_usd)).where(
+                ChatAuditLog.session_id == session_id, ChatAuditLog.created_at >= cutoff
+            )
+        )
+        total = result.scalar()
+        return float(total) if total is not None else 0.0
+    except Exception:
+        log.warning("Could not read session spend; skipping the session budget check", exc_info=True)
+        return None
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, db: DbSessionDep, settings: SettingsDep, user_id: CurrentUserIdDep) -> ChatResponse:
     pipeline = get_pipeline_for(req.llm_provider, req.llm_model)
@@ -102,9 +136,26 @@ async def chat(req: ChatRequest, db: DbSessionDep, settings: SettingsDep, user_i
         )
         return cached
 
+    # Session-level circuit breaker (README's "Job-level limits"): once a session has spent its
+    # rolling-24h budget, force the answerer's pre-flight budget to 0 for this request -- the
+    # existing per-request budget-rejection path (src/pipeline/answering/agent.py) then degrades
+    # to the context-only fallback answer, same as any other over-budget request, rather than a
+    # new failure mode. `session_spend` is None when it couldn't be checked (DB down); that
+    # means "don't block", not "assume under budget forever" -- same best-effort treatment as
+    # every other platform read on this path.
+    session_spend = await _session_spend_24h(db, req.session_id)
+    max_answer_cost_usd = 0.0 if session_spend is not None and session_spend >= SESSION_DAILY_BUDGET_USD else None
+    if max_answer_cost_usd == 0.0:
+        log.warning(
+            "session=%s spent $%.4f in the last 24h, over the $%.2f cap; forcing a free response",
+            req.session_id,
+            session_spend,
+            SESSION_DAILY_BUDGET_USD,
+        )
+
     start = time.perf_counter()
     try:
-        response = await pipeline.run(req)
+        response = await pipeline.run(req, max_answer_cost_usd=max_answer_cost_usd)
     except GuardrailViolation:
         duration_ms = round((time.perf_counter() - start) * 1000, 1)
         await _record(db, req, user_id, question_masked, "", 0, "", "guardrail_blocked", duration_ms)

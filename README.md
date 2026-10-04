@@ -2,7 +2,7 @@
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
 
-> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), per-stage cost accounting with a pre-flight budget check, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing and local-only Langfuse tracing all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 10/10 retrieval-accuracy check (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). Job-level spend limits, prompt caching and the richer trace field set are still a design, not code — see [Production readiness](#production-readiness).
+> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), per-stage cost accounting with a pre-flight budget check, session- and batch-job-level spend circuit breakers, prompt caching, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing, local-only Langfuse tracing, a 30-question DeepEval suite (`GEval` + `FaithfulnessMetric`), release gates and an alerting check all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 30/30 live retrieval-accuracy pass (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). The richer trace field set is still a design, not code — see [Production readiness](#production-readiness).
 
 <!-- TODO: demo GIF -->
 
@@ -14,13 +14,13 @@
 - Hybrid retrieval: semantic search (Milvus) and Cypher queries (Neo4j) run in parallel
 - Input guardrails and regex-based PII masking, always on, before anything reaches an LLM
 - Agentic RAG (DeepAgents) with Pydantic-validated structured output
-- Per-stage cost accounting and a pre-flight budget check before the answerer call (`src/pipeline/pricing.py`)
+- Per-stage cost accounting and a pre-flight budget check before the answerer call, plus session- and batch-job-level spend circuit breakers (`src/pipeline/pricing.py`)
 - LLM-as-a-judge script (`evals/judge.py`) grading real pipeline answers against a reference
 - Upload Excel, CSV, Markdown and PDF files, ingested through LlamaIndex
 - JWT auth (register/login/me), Postgres-backed chat history, audit log and ingestion job tracking
 - Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
-- Local-only Langfuse tracing (never Langfuse Cloud) and evals (`make eval`, `make judge`; DeepEval is still planned)
-- Planned: agent actions (change data, analysis and plots), job-level spend limits, prompt caching, release gates and the richer trace field set — see [Production readiness](#production-readiness)
+- Local-only Langfuse tracing (never Langfuse Cloud) and evals (`make eval`, `make judge`, `make deepeval`, `make gates`, `make alerts`)
+- Planned: agent actions (change data, analysis and plots) and the richer trace field set — see [Production readiness](#production-readiness)
 
 ## Architecture
 
@@ -138,17 +138,17 @@ Both stages fail the same way: if the call fails (bad key, timeout, malformed ou
 
 PII masking (`src/guardrails/pii.py`) is always on, independent of any API key — it's regex-based (email, phone, card and SSN-shaped strings get replaced with a `[REDACTED_...]` placeholder) and runs before the message reaches the router or the answerer, so masking never depends on having an LLM available. Input guardrails (`src/guardrails/input.py`) block a short list of prompt-injection phrasings before the pipeline runs at all.
 
-`evals/check_retrieval.py` is a 10-question accuracy check against the *live* databases (unlike the mocked unit tests, it proves the retrievers find the right thing in the sample data). Run it with `make eval` after `make ingest`:
+`evals/check_retrieval.py` is a 30-question accuracy check against the *live* databases (unlike the mocked unit tests, it proves the retrievers find the right thing in the sample data). Run it with `make eval` after `make ingest`:
 
 ```
 $ make eval
 [PASS] What is the meal expense limit while travelling?
        expected top source 'expense_policy.md', got 'expense_policy.md — Limits'
 ...
-10/10 correct (100%)
+30/30 correct (100%)
 ```
 
-`evals/judge.py` (`make judge`) goes further: it runs the *actual* pipeline end to end — real retrieval, real router, real DeepAgents answer — and has Claude grade each answer against a reference (see [LLM-as-a-judge](#llm-as-a-judge)). Needs `ANTHROPIC_API_KEY` and costs real money to run (one answering call plus one judging call per question). Its request shape has been checked against the live API with an invalid key (a real 401 comes back, not a malformed-request error), but it hasn't been run end to end with a valid key yet.
+`evals/judge.py` (`make judge`) goes further: it runs the *actual* pipeline end to end — real retrieval, real router, real DeepAgents answer — and has Claude grade each answer against a reference (see [LLM-as-a-judge](#llm-as-a-judge)). Needs `ANTHROPIC_API_KEY` and costs real money to run (one answering call plus one judging call per question). Its request shape has been checked against the live API with the only key available in this environment — valid but out of credit — and gets a real `400` billing error, not a malformed-request error, but it hasn't been run end to end with a funded key yet. `evals/deepeval_suite.py` (`make deepeval`) is the fuller version — see [LLM-as-a-judge](#llm-as-a-judge) — verified the same way.
 
 Both scripts are hand-rolled precursors to the "DeepEval, 25 golden questions" Phase 4 item — same idea, smaller and framework-free.
 
@@ -165,53 +165,57 @@ Phase 3. No stub/real split here — unlike the LLM pipeline stages, there's no 
 
 ## Production readiness
 
-Design targets for cost, quality and observability, tracked in the [roadmap](#roadmap) (Phase 4). Real retrieval, routing, answering and the Phase 3 platform pieces all exist now (see above); a bare-bones `chat_audit_log` is real too (see below). What's still a design, not code: per-call cost accounting, release-gate enforcement, alerting, and the richer trace field set. Nothing currently measures or enforces the numbers in this section — they're starting points to retune once there's real traffic and real measurement.
+Design targets for cost, quality and observability, tracked in the [roadmap](#roadmap) (Phase 4) — most of it is now implemented and live-verified, not just design: per-call and job-level cost accounting, release-gate enforcement, and an alerting check all have real code (see below for exactly what each one does and doesn't cover). What's still a design, not code: the richer trace field set, and real production alerting (a cron script stands in for Prometheus/Alertmanager/paging). The specific numeric thresholds throughout this section (latency targets, alert levels) are still starting points to retune once there's real production traffic to measure against — the *mechanism* for enforcing them is real, the *tuning* isn't.
 
 ### Cost controls (tokenomics)
 
 **Per-stage cost accounting and the pre-flight budget rejection are implemented** (`src/pipeline/pricing.py`, wired into `src/pipeline/parsing/router.py` and `src/pipeline/answering/agent.py`). One **inspection** = one `/api/chat` request/response cycle. Target: **≤$0.15/inspection**, split into a per-stage budget so no single stage can blow the total:
 
-| Stage                     | Spend driver              | Budget            | Notes                                                                                                                |
-| ------------------------- | ------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
-| PII masking               | —                        | $0.00             | Regex/NER, no LLM call — masking is a bad place to spend tokens                                                     |
-| Parse/route               | small classification call | ≤$0.01 (`PARSE_BUDGET_USD`) | Structured output. Real cost computed from the router's `AIMessage.usage_metadata` (via `include_raw=True`) — no pre-flight gate, the stage is cheap enough it isn't worth one |
-| Retrieve (vector + graph) | —                        | $0.00             | Local embedding (fastembed) + rule-based Cypher generation; only infra cost, no per-token spend                      |
-| Merge / ROI-compress      | optional reranker         | ≤$0.005          | See below                                                                                                            |
-| Answer synthesis          | agentic RAG               | ≤$0.12 (`ANSWER_BUDGET_USD`) | The dominant cost: real cost summed across every `AIMessage` DeepAgents produces (it can round-trip the model more than once per request)                     |
-| **Total**           |                           | **≤$0.15 (`TOTAL_BUDGET_USD`)** | `ChatResponse.total_cost_usd` — logged as a warning if exceeded; `None` (not summed as $0) if any stage's model isn't in the pricing table            |
+| Stage                     | Spend driver              | Budget                                   | Notes                                                                                                                                                                              |
+| ------------------------- | ------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PII masking               | —                        | $0.00                                    | Regex/NER, no LLM call — masking is a bad place to spend tokens                                                                                                                   |
+| Parse/route               | small classification call | ≤$0.01 (`PARSE_BUDGET_USD`)           | Structured output. Real cost computed from the router's`AIMessage.usage_metadata` (via `include_raw=True`) — no pre-flight gate, the stage is cheap enough it isn't worth one |
+| Retrieve (vector + graph) | —                        | $0.00                                    | Local embedding (fastembed) + rule-based Cypher generation; only infra cost, no per-token spend                                                                                    |
+| Merge / ROI-compress      | optional reranker         | ≤$0.005                                 | See below                                                                                                                                                                          |
+| Answer synthesis          | agentic RAG               | ≤$0.12 (`ANSWER_BUDGET_USD`)          | The dominant cost: real cost summed across every`AIMessage` DeepAgents produces (it can round-trip the model more than once per request)                                         |
+| **Total**           |                           | **≤$0.15 (`TOTAL_BUDGET_USD`)** | `ChatResponse.total_cost_usd` — logged as a warning if exceeded; `None` (not summed as $0) if any stage's model isn't in the pricing table                                    |
 
 - **Pricing table** (`PRICING` in `src/pipeline/pricing.py`) — covers only the models this project's router/answerer can actually select (the router's Anthropic model, and `src/pipeline/models.py`'s `MODEL_CATALOG`). Ollama models are priced $0 (local compute, no per-token API cost). A model not in the table returns `cost_usd=None` — genuinely unknown, never guessed as free.
 - **Pre-flight estimation** (`DeepAgentAnswerer._estimate_cost_usd`) — before the real agent call, count input tokens via the configured model's own `get_num_tokens_from_messages` on the assembled prompt: for Anthropic this calls the real `messages.count_tokens` API (verified live — see `CLAUDE.md`), for OpenAI it's a local `tiktoken` count, for Ollama a cheap local heuristic — each backend's best available method, no branching needed. Combined with a worst-case output estimate (`MAX_OUTPUT_TOKENS`, the same 1024-token cap passed to the model), if the estimate exceeds `ANSWER_BUDGET_USD` the real LLM call is skipped entirely and the context-only fallback answer is returned (`AnswerResult.budget_rejected=True`, `cost_usd=0.0` — no call was made, so nothing was spent). If the token count itself fails (network error, unsupported model), the budget check is skipped rather than blocking the request.
 - **Actual cost accounting** — after a successful LLM call, `usage_from_ai_message` reads langchain's standardized `usage_metadata` (`input_tokens`, `output_tokens`, and Anthropic's `input_token_details.cache_read`/`cache_creation`) and `cost_usd` multiplies by the model's per-token price. This lands in `StageTrace` (`model`, `input_tokens`, `output_tokens`, `cost_usd`, `budget_rejected`) and the matching Langfuse span — see [Observability and audit trail](#observability-and-audit-trail).
-- **Caching** — not yet implemented. The answerer's system prompt and tool schemas are stable across requests and a good caching candidate (`cache_control: {type: "ephemeral"}`), which would show up as non-zero `cache_read_tokens` in the trace above once added.
+- **Caching** — the answerer's system prompt is cached (`src/pipeline/answering/agent.py`'s `_build_system_prompt`): for `LLM_PROVIDER=anthropic` only (OpenAI caches automatically with no API to opt into; Ollama has no concept of it), the system prompt is sent as a `SystemMessage` with a `cache_control: {type: "ephemeral"}` breakpoint on its one content block. `create_deep_agent` preserves a `SystemMessage`'s content blocks and appends its own boilerplate as a further, uncached block, so the breakpoint still covers all of `SYSTEM_PROMPT`. Verified two ways: the actual formatted request `langchain_anthropic` sends was inspected directly and does carry `cache_control` (`tests/test_agent.py::test_build_system_prompt_cache_control_reaches_the_wire_format` — written after an initial version using `TextContentBlock`'s typed `extras` field turned out to be silently dropped by `_format_text_block`, which only reads a bare top-level key); and a live call against the real endpoint (with the known out-of-credit key) got the same `400` billing error as before `cache_control` was added, not a different "malformed request" error, confirming the request shape itself is accepted. **Tool-schema caching is not implemented** — DeepAgents builds its own built-in tool list (filesystem tools, task/subagent tools) internally and doesn't expose a hook to attach `cache_control` to it; doing this would mean forking or monkeypatching DeepAgents' internals, out of scope here. Repeat identical requests should show non-zero `cache_read_tokens` in the trace once a real (non-out-of-credit) Anthropic key is available to verify the cache actually hits — unverified so far for the same reason the rest of the Anthropic happy path is (see `CLAUDE.md`).
 - **ROI compression** — before merged context reaches the answerer, rank citations and keep only the highest-value ones per token: drop low-relevance chunks, cap total context (default 2,000 tokens). This is `merge_context` (`src/pipeline/merge.py`): dedupe by id, rank by retriever score (unscored citations sort last), then greedily fill the token budget (cheap char-based estimate, no LLM call) — always keeping at least one citation even if it alone exceeds the budget. There's no summarization step; chunks are kept verbatim or dropped.
-- **Job-level limits** — not yet implemented. $0.15 is only a per-request cap today; a per-session (e.g. $1/user/day) and per-batch-job (eval/judge runs, e.g. $5/run) circuit breaker is still a design, not code.
+- **Job-level limits** — implemented, one level up from the per-request $0.15 cap above:
+  - **Per-session** (`SESSION_DAILY_BUDGET_USD = $1.00`, `src/pipeline/pricing.py`) — `src/api/routes/chat.py`'s `_session_spend_24h` sums `chat_audit_log.cost_usd` for the request's `session_id` over a rolling 24h window (computed from the database's own `now()`, not a client-side timestamp — see the function's docstring for the real bug that taught this), and once a session is over the cap, passes `max_answer_cost_usd=0.0` into `Pipeline.run()`. This reuses the existing per-request pre-flight-rejection path (`DeepAgentAnswerer.answer`'s `max_cost_usd` param) rather than a new fallback mechanism: the request still runs retrieval and returns real citations, just with the context-only fallback answer instead of a real LLM call. Best-effort like every other platform read: if the spend can't be checked (Postgres down), it doesn't block — same as a Postgres outage degrading history/audit logging elsewhere.
+  - **Per-batch-job** (`BATCH_JOB_BUDGET_USD = $5.00`) — `BatchBudget` (`src/pipeline/pricing.py`) is a simple in-process accumulator shared across one script run; `evals/judge.py`, `evals/deepeval_suite.py` and the latency/cost measurement pass in `evals/release_gates.py` all call `budget.check()` before each question and `budget.add(cost)` after, so `evals/release_gates.py` can pass one shared tracker across its whole run (retrieval + judge + deepeval + measurement) rather than each phase getting its own $5. Exceeding the limit raises `BudgetExceededError` — a genuine hard stop mid-run, not a logged warning the job ignores.
+  - Verified live: the session breaker was confirmed end to end against real Postgres (a seeded over-cap session correctly got `budget_rejected: true` in the trace and a logged warning, while a normal session was unaffected); `make judge` and `make gates` both still reach the real Anthropic endpoint and fail for the same known out-of-credit reason as before these changes, confirming the budget bookkeeping doesn't change the request shape.
 
 ### Evaluation and release gates
 
-A release (prompt change, retriever change, or model swap) ships only when every **blocking** gate below passes against the golden set (`evals/golden_questions.json` — 10 retrieval questions today, growing toward the 25-question DeepEval set in the roadmap). **Warn** gates are reported, not enforced.
+A release (prompt change, retriever change, or model swap) ships only when every **blocking** gate below passes against the golden set (`evals/golden_questions.json` — 30 questions: 20 retrieval-only plus 10 with a `reference_answer` for judging, covering every sample document and a spread of the knowledge graph). **Warn** gates are reported, not enforced.
 
-| Dimension         | Metric                                                             | Target                             | Gate                                                                      |
-| ----------------- | ------------------------------------------------------------------ | ---------------------------------- | ------------------------------------------------------------------------- |
-| Retrieval quality | top-1 hit rate (`evals/check_retrieval.py`)                      | ≥90%                              | Blocking                                                                  |
-| Answer quality    | LLM-judge correctness score, 1–5 (see below)                      | mean ≥4.2, no individual score <3 | Blocking                                                                  |
-| Citation          | factual claims traceable to a cited snippet                        | 0 hallucinated citations           | Blocking                                                                  |
-| Citation          | claims with no citation at all                                     | ≤5% of claims                     | Blocking                                                                  |
-| Latency           | P50 end-to-end`/api/chat`                                        | ≤2.5s                             | Warn >2.5s, blocking >5s                                                  |
-| Latency           | P95 end-to-end                                                     | ≤6s                               | Warn >6s, blocking >10s                                                   |
-| Cost              | mean $/inspection over the golden set                              | ≤$0.15                            | Warn >$0.15, blocking >$0.20                                              |
-| HITL              | sampled human review of production answers (5% of traffic, weekly) | ≥90% rated acceptable             | Below 90% blocks the next release until reviewed                          |
-| HITL              | escalation rate ("I don't know" / handoff to a human)              | within 2× the 7-day baseline      | Blocking if exceeded — usually signals a retrieval or routing regression |
+**Implemented**: `evals/gates.py` holds the pure threshold logic as data (unit-tested offline in `tests/test_gates.py` — no live service needed to test the *decision* logic), and `evals/release_gates.py` (`make gates`) gathers real metrics from a live run (`check_retrieval.py` + `judge.py` + `deepeval_suite.py` + measured latency/cost) and applies them, exiting 1 on any block. `.github/workflows/release-gates.yml` wires this into CI as a `workflow_dispatch` job — **manual, not on every push**, since this repo has no `ANTHROPIC_API_KEY` (or live Milvus/Neo4j) configured as a CI secret; wiring it into `push`/`pull_request` like `ci.yml` would just fail every run for a reason unrelated to the code, which would violate this project's "CI stays fully offline" rule (see `CLAUDE.md`). Whoever configures real credentials gets real enforcement; until then, the workflow exists and documents exactly what it needs.
+
+| Dimension         | Metric                                                                                                                | Target                             | Gate                                                                      | Implementation                                                                                                              |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Retrieval quality | top-1 hit rate                                                                                                        | ≥90%                              | Blocking                                                                  | `evals/check_retrieval.py`                                                                                                |
+| Answer quality    | LLM-judge correctness score, 1–5 (see below)                                                                         | mean ≥4.2, no individual score <3 | Blocking                                                                  | `evals/judge.py`                                                                                                          |
+| Citation          | `FaithfulnessMetric` score, 0–1 (combines "hallucinated claims" and "uncited claims" into one number — see below) | ≥0.8                              | Blocking                                                                  | `evals/deepeval_suite.py`                                                                                                 |
+| Latency           | P50 end-to-end`/api/chat`                                                                                           | ≤2.5s                             | Warn >2.5s, blocking >5s                                                  | measured during the`release_gates.py` run                                                                                 |
+| Latency           | P95 end-to-end                                                                                                        | ≤6s                               | Warn >6s, blocking >10s                                                   | measured during the`release_gates.py` run                                                                                 |
+| Cost              | mean $/inspection over the golden set                                                                                 | ≤$0.15                            | Warn >$0.15, blocking >$0.20                                              | `ChatResponse.total_cost_usd`, averaged                                                                                   |
+| HITL              | sampled human review of production answers (5% of traffic, weekly)                                                    | ≥90% rated acceptable             | Below 90% blocks the next release until reviewed                          | **not implemented** — no production traffic exists to sample from; always reported as "not applicable", never blocks |
+| HITL              | escalation rate ("I don't know" / handoff to a human)                                                                 | within 2× the 7-day baseline      | Blocking if exceeded — usually signals a retrieval or routing regression | **not implemented**, same reason                                                                                      |
 
 ### LLM-as-a-judge
 
 Golden-string matching — what `evals/check_retrieval.py` does — only works for retrieval: it checks "did the right source come back", not "is the final answer correct." A synthesized answer has to be judged, not string-matched; this is what feeds the Answer quality and Citation rows above.
 
-- **Implemented today** — `evals/judge.py` (`make judge`) runs the real pipeline against each golden question, then has a Claude judge call score the answer 1–5 against `golden_questions.json`'s `reference_answer`, using a `JudgeVerdict` schema (`score`, `passed`, `rationale`) so the grade is structured, not parsed out of free text. It's the interim version of the item below — a single correctness score, no separate citation-faithfulness or completeness dimensions yet, and it isn't wired into CI or a release gate.
-- **Planned upgrade** — [DeepEval](https://docs.confident-ai.com/)'s `GEval` and `FaithfulnessMetric`, backed by a Claude judge call against a fuller rubric (correctness vs. reference, citation faithfulness, completeness) rather than a single score.
-- **Judge independence** — prefer a different model tier for judging than for answering where practical (e.g. Sonnet judges a Haiku-tier answer), to reduce self-preference bias; where the same model must judge itself, lean on the rubric's structure rather than the judge's raw opinion.
-- **Output** — a structured score (1–5) per dimension plus a short rationale, stored in the trace so a failing release gate points at *why*, not just *that* it failed.
+- **`evals/judge.py`** (`make judge`) — the simple version: runs the real pipeline against each golden question with a `reference_answer`, then has a Claude judge call score the answer 1–5, using a `JudgeVerdict` schema (`score`, `passed`, `rationale`) so the grade is structured, not parsed out of free text.
+- **`evals/deepeval_suite.py`** (`make deepeval`, needs the `eval` uv group — `uv sync --group eval`) — the fuller version, using [DeepEval](https://docs.confident-ai.com/)'s `GEval` (a correctness rubric vs. the reference answer, scored 0–1) and `FaithfulnessMetric` (are the answer's claims actually supported by the retrieved context — the concrete implementation of the Citation gate). Both run against a custom `AnthropicJudgeModel` (`deepeval.models.DeepEvalBaseLLM` wrapping `ChatAnthropic`) rather than DeepEval's OpenAI-shaped defaults, so the judge is Claude like `judge.py`'s. Needs the `eval` dependency group specifically because `deepeval` registers a pytest plugin that calls `load_dotenv()` during pytest's plugin-loading phase — *before* `conftest.py`'s own dotenv neutering can run — so it's never installed by default and `pyproject.toml` carries `addopts = "-p no:deepeval"` as defense in depth even if someone runs tests with it installed (caught live while building this — see `CLAUDE.md`'s known gotchas).
+- **Judge independence** — both scripts default to a different model tier for judging than the answerer typically runs (`claude-sonnet-5` judging, vs. the Haiku-class default answerer), to reduce self-preference bias.
 - **Cost** — judge runs are an offline/batch job, not counted against the $0.15/inspection budget; tracked under the batch-job cap in [Cost controls](#cost-controls-tokenomics) instead.
+- **Verified live, not just offline**: both scripts reach the real `api.anthropic.com` and fail for the expected reason (the same known out-of-credit `400` documented throughout this README), not a malformed-request error — proving the request shape, judge wrapper and golden-set plumbing are all correct even though the happy path itself is unverified (no funded key available in this environment).
 
 ### Observability and audit trail
 
@@ -219,37 +223,39 @@ Golden-string matching — what `evals/check_retrieval.py` does — only works f
 
 **Per-request trace** (one root span per `Pipeline.run()` call, `as_type="chain"`) — implemented fields:
 
-| Field                                     | Description                                                            |
-| ------------------------------------------ | ------------------------------------------------------------------------ |
-| `session_id`                             | set in metadata at span start and again on every update                  |
-| `input`                                  | the PII-masked question — set only after the "pii" stage, never `req.message` directly, so `question_raw` never reaches the trace |
-| `output`                                  | the final answer text                                                    |
-| `sources_queried`, `intent`            | which of vector/graph were queried, and the router's intent classification |
-| `citations_count`                        |                                                                          |
-| `total_cost_usd`                         | `ChatResponse.total_cost_usd` — sum of the per-stage `cost_usd` values, `None` if any stage's model is unpriced |
-| `outcome`                                 | `success` / `guardrail_blocked` / `error`                          |
+| Field                           | Description                                                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `session_id`                  | set in metadata at span start and again on every update                                                                               |
+| `input`                       | the PII-masked question — set only after the "pii" stage, never`req.message` directly, so `question_raw` never reaches the trace |
+| `output`                      | the final answer text                                                                                                                 |
+| `sources_queried`, `intent` | which of vector/graph were queried, and the router's intent classification                                                            |
+| `citations_count`             |                                                                                                                                       |
+| `total_cost_usd`              | `ChatResponse.total_cost_usd` — sum of the per-stage `cost_usd` values, `None` if any stage's model is unpriced                |
+| `outcome`                     | `success` / `guardrail_blocked` / `error`                                                                                       |
 
 Not yet implemented: `total_latency_ms` as a distinct rollup field (the per-stage `duration_ms` values are there, just not pre-summed), token counts at the request level (they're per-stage — see below), and a `fallback_used` outcome value (the router/answerer's own fallback is logged but not yet surfaced into this field).
 
 **Per-stage trace** (one child span per `timed()`/`timed_llm()` call in the orchestrator, automatically nested under the request's root span via Langfuse's OTel context) — implemented, matching `StageTrace` in `src/schemas/chat.py`: `name`, `detail` (as metadata), `duration_ms` (as output), and for the LLM-backed stages (parse, answer) `model`, `input_tokens`, `output_tokens`, `cost_usd`, `budget_rejected` — see [Cost controls](#cost-controls-tokenomics) for how these are computed. Not yet implemented: `cache_read_tokens` as its own trace field (it's used in the cost calculation but not surfaced separately), `query_used`/`num_results`/`top_score` for vector retrieve, `keywords`/`num_nodes_matched` for graph retrieve, and per-stage `error` detail — these need widening the `Retriever` protocol to expose more than the citations it returns today.
 
-**Audit log** — append-only Postgres `chat_audit_log` is real (see [Platform](#platform-auth-history-and-messaging)), one row per request. It only stores `question_masked`, never the raw question — the audit trail must not become a second place PII leaks from. What's still a design, not code: 90-day retention (no expiry job runs yet), and the richer field set below (tokens, cost, cache state) — today's table has `session_id`, `user_id`, `question_masked`, `answer`, `sources_queried`, `citations_count`, `outcome`, `duration_ms`.
+**Audit log** — append-only Postgres `chat_audit_log` is real (see [Platform](#platform-auth-history-and-messaging)), one row per request. It only stores `question_masked`, never the raw question — the audit trail must not become a second place PII leaks from. Today's table: `session_id`, `user_id`, `question_masked`, `answer`, `sources_queried`, `citations_count`, `outcome`, `duration_ms`, `cost_usd` (`ChatResponse.total_cost_usd`, added alongside `evals/check_alerts.py` specifically to feed its "mean cost/request" condition — `None` whenever any stage's cost is unknown, never a guessed $0). What's still a design, not code: 90-day retention (no expiry job runs yet) and per-stage token counts. Note: this table's schema is created with `Base.metadata.create_all` (not a migration tool — see `src/db/models.py`), which only creates *missing* tables; an existing live Postgres from before `cost_usd` was added needs a manual `ALTER TABLE chat_audit_log ADD COLUMN cost_usd double precision;` to pick it up.
 
-**Alert conditions**:
+**Alert conditions**: implemented as a stand-in for a real alerting pipeline — `evals/alerts.py` (pure threshold logic, unit-tested offline in `tests/test_alerts.py`) + `evals/check_alerts.py` (`make alerts`, reads live `chat_audit_log` rows). This is a manual/cron script, not real alerting: there's no Prometheus/Alertmanager, no paging integration, and the "Page" actions below (force a cheaper model, auto-rollback) aren't automated — the script only reports which level each condition is at.
 
-| Condition                                   | Threshold                  | Action                                                                         |
-| ------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------ |
-| Mean cost/request, 15 min rolling           | >$0.15                     | Warn                                                                           |
-| Mean cost/request, 15 min rolling           | >$0.30                     | Page + force the cheaper model / stub answerer                                 |
-| P95 latency, 5 min                          | >6s                        | Warn                                                                           |
-| P95 latency, 5 min                          | >15s                       | Page                                                                           |
-| 5xx / guardrail-block rate, 10 min          | >2%                        | Warn                                                                           |
-| 5xx / guardrail-block rate, 10 min          | >10%                       | Page + auto-rollback to the previous prompt/model version                      |
-| Router fallback rate, 30 min                | >20%                       | Warn — LLM router likely failing or misconfigured                             |
-| Empty-result rate (vector or graph), 30 min | >15%                       | Warn — index or data problem                                                  |
-| Judge-flagged hallucination rate, daily     | >5% of sampled answers     | Page — quality regression                                                     |
-| Guardrail trip rate                         | >3× the 7-day baseline    | Warn — possible prompt-injection campaign                                     |
-| Prompt cache hit rate                       | <50% of its 7-day baseline | Warn — silent cache invalidator, see[Cost controls](#cost-controls-tokenomics) |
+| Condition                                   | Threshold                  | Action                                                                         | Computable today?                                                               |
+| ------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| Mean cost/request, 15 min rolling           | >$0.15                     | Warn                                                                           | Yes —`chat_audit_log.cost_usd`                                               |
+| Mean cost/request, 15 min rolling           | >$0.30                     | Page + force the cheaper model / stub answerer                                 | Yes (reported only; no auto-switch)                                             |
+| P95 latency, 5 min                          | >6s                        | Warn                                                                           | Yes —`chat_audit_log.duration_ms`                                            |
+| P95 latency, 5 min                          | >15s                       | Page                                                                           | Yes (reported only)                                                             |
+| 5xx / guardrail-block rate, 10 min          | >2%                        | Warn                                                                           | Yes —`chat_audit_log.outcome`                                                |
+| 5xx / guardrail-block rate, 10 min          | >10%                       | Page + auto-rollback to the previous prompt/model version                      | Yes (reported only; no auto-rollback)                                           |
+| Router fallback rate, 30 min                | >20%                       | Warn — LLM router likely failing or misconfigured                             | **No** — the router's own fallback isn't recorded in `chat_audit_log`  |
+| Empty-result rate (vector or graph), 30 min | >15%                       | Warn — index or data problem                                                  | Yes —`chat_audit_log.citations_count`                                        |
+| Judge-flagged hallucination rate, daily     | >5% of sampled answers     | Page — quality regression                                                     | **No** — no scheduled judge run against production traffic exists        |
+| Guardrail trip rate                         | >3× the 7-day baseline    | Warn — possible prompt-injection campaign                                     | **No** — needs a stored 7-day rolling baseline this project doesn't keep |
+| Prompt cache hit rate                       | <50% of its 7-day baseline | Warn — silent cache invalidator, see[Cost controls](#cost-controls-tokenomics) | **No**, same reason                                                       |
+
+Verified live: pointed at real traffic generated through `make dev`, the four computable conditions correctly read non-trivial values (P95 latency, 0% error rate, 0% empty-result rate) from live rows; cost showed "not computable" *for that specific traffic* because the router's own known out-of-credit-key failure poisons `total_cost_usd` to `None` on every request in this environment (see `CLAUDE.md`), not because the wiring is broken. Caught and fixed a real bug while verifying this: the first version compared a Python-computed UTC timestamp against `chat_audit_log.created_at` (`TIMESTAMP WITHOUT TIME ZONE`, populated by Postgres's own `now()`) and silently returned zero rows whenever the client and server clocks disagreed — not a hypothetical, it actually happened live (~4 hours off). Fixed by computing every window boundary with Postgres's own `now()` instead of a client-side timestamp.
 
 ## Project structure
 
@@ -270,7 +276,7 @@ src/                     backend (FastAPI), imported as `src.*`
   core/                  logging, error handling
   observability/         placeholder for Langfuse
 utils/                   CLI: bulk-load source_data/ and manual uploads into Milvus and Neo4j
-evals/                   golden_questions.json, a live retrieval-accuracy check, and an LLM-as-a-judge script
+evals/                   golden_questions.json (30), live retrieval/judge/DeepEval checks, release gates, alerting — see evals/README.md
 source_data/             sample data (vector_data/, graph_data/) and an HTML viewer
 tests/                   pytest suite
 frontend/src/            React UI (Chat, Data Management)
@@ -313,18 +319,12 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 
 - [X] Langfuse tracing, local-only, with the per-request/per-stage fields buildable from what the pipeline returns today (token/cost/model fields wait on the item below)
 - [X] Per-stage cost accounting (`response.usage` → `cost_usd`) and the $0.15/inspection budget, with pre-flight `count_tokens` rejection
-- [ ] Prompt caching for the answerer's system prompt and tool schemas
-- [ ] DeepEval with 30 golden questions, including LLM-as-a-judge (`GEval`, `FaithfulnessMetric`)
-- [ ] Release gates: quality/latency/cost/citation/HITL thresholds, enforced in CI
-- [ ] Alerting on the conditions in [Observability and audit trail](#observability-and-audit-trail)
+- [X] Prompt caching for the answerer's system prompt (Anthropic only); tool-schema caching isn't possible without forking DeepAgents internals — see [Cost controls](#cost-controls-tokenomics)
+- [X] DeepEval with 30 golden questions, including LLM-as-a-judge (`GEval`, `FaithfulnessMetric`) — `evals/deepeval_suite.py` (`make deepeval`)
+- [X] Release gates: quality/latency/cost/citation thresholds, manually enforceable in CI — `evals/gates.py` (pure, unit-tested) + `evals/release_gates.py` (`make gates`) + `.github/workflows/release-gates.yml` (`workflow_dispatch`, needs a real `ANTHROPIC_API_KEY` secret this repo doesn't have — see the workflow file). HITL thresholds are intentionally never enforced: no production traffic exists to sample from.
+- [X] Alerting on the conditions in [Observability and audit trail](#observability-and-audit-trail) — `evals/alerts.py` (pure, unit-tested) + `evals/check_alerts.py` (`make alerts`), reading real `chat_audit_log` rows. 4 of 6 conditions are genuinely computable today; 2 aren't (see below) — this is a manual/cron script, not a real alerting pipeline (no Prometheus/Alertmanager/paging integration exists in this project).
+- [ ] Agent functionality for edit/update
 - [ ] Demo GIF
-
-**ToDo**
-
-- [ ] Agent actions: change data, analysis and plots
-- [ ] Tokenomics
-- [ ] Guardrails/hooks
-- [ ] Model routing
 
 ## License
 

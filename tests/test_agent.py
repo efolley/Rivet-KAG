@@ -179,6 +179,30 @@ async def test_agent_skips_the_llm_call_when_the_preflight_estimate_exceeds_budg
     assert "couldn't generate a complete answer" in result.text
 
 
+async def test_agent_max_cost_usd_zero_skips_the_call_without_a_preflight_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller passing max_cost_usd=0.0 (the session-level circuit breaker in
+    src/api/routes/chat.py) has already decided this request must not spend anything -- the
+    pre-flight token count must not even run (nothing it could estimate would change the
+    outcome), and the real agent call must never run either."""
+    answerer = _answerer(monkeypatch, None)
+
+    def boom_estimate(*a: object, **k: object) -> None:
+        raise AssertionError("the pre-flight estimate must not run when max_cost_usd<=0")
+
+    def boom_call(state: object) -> None:
+        raise AssertionError("the real agent call must not run when max_cost_usd<=0")
+
+    monkeypatch.setattr(answerer, "_estimate_cost_usd", boom_estimate)
+    monkeypatch.setattr(answerer._agent, "ainvoke", boom_call)
+
+    result = await answerer.answer("q", CONTEXT, max_cost_usd=0.0)
+
+    assert result.budget_rejected is True
+    assert result.cost_usd == 0.0
+
+
 def test_agent_answer_schema_rejects_an_invalid_confidence_value() -> None:
     with pytest.raises(ValidationError):
         AgentAnswer(answer="x", citation_ids=[], confidence="very high")

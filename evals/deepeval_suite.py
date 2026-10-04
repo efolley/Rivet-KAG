@@ -11,7 +11,12 @@ default; see pyproject.toml's `addopts = "-p no:deepeval"` for why that matters 
 plugin calls load_dotenv() during plugin loading, before conftest.py can stop it).
 
 Costs real money to run: one answering call, plus one GEval call and one FaithfulnessMetric
-call (itself 1+ calls to extract then verify claims) per question.
+call (itself 1+ calls to extract then verify claims) per question. Guarded by a BatchBudget
+(src/pipeline/pricing.py) against the pipeline's own spend (`response.total_cost_usd`) -- the
+judge-call cost itself isn't tracked here: DeepEval only accrues `evaluation_cost` for its
+built-in "native" model integrations, not a custom DeepEvalBaseLLM like AnthropicJudgeModel
+below, so there's no cost figure to read back. The breaker still catches the dominant cost (the
+answerer), just not the smaller judge-call cost on top of it.
 
 Usage:
   make deepeval
@@ -30,6 +35,7 @@ from pydantic import SecretStr
 
 from src.config import Settings, get_settings
 from src.pipeline.factory import build_pipeline
+from src.pipeline.pricing import BatchBudget
 from src.schemas import ChatRequest
 
 QUESTIONS_PATH = Path(__file__).parent / "golden_questions.json"
@@ -110,10 +116,16 @@ def build_judge_model(settings: Settings, model_name: str = DEFAULT_JUDGE_MODEL)
     return cls(model_name, settings.anthropic_api_key)
 
 
-async def run_deepeval_suite(settings: Settings, judge_model_name: str = DEFAULT_JUDGE_MODEL) -> DeepEvalSuiteResult:
+async def run_deepeval_suite(
+    settings: Settings, judge_model_name: str = DEFAULT_JUDGE_MODEL, budget: BatchBudget | None = None
+) -> DeepEvalSuiteResult:
     """Runs the real pipeline + GEval + FaithfulnessMetric over every golden question with a
     reference_answer. The reusable core evals/release_gates.py calls directly, separate from
-    this module's own print-and-exit CLI below."""
+    this module's own print-and-exit CLI below.
+
+    `budget` lets a caller (evals/release_gates.py) share one BatchBudget across several
+    scripts' worth of spend; a standalone run gets its own fresh one."""
+    budget = budget or BatchBudget()
     from deepeval.metrics import FaithfulnessMetric, GEval
     from deepeval.test_case import LLMTestCase, SingleTurnParams
 
@@ -138,7 +150,9 @@ async def run_deepeval_suite(settings: Settings, judge_model_name: str = DEFAULT
 
     results: list[QuestionResult] = []
     for q in questions:
+        budget.check()
         response = await pipeline.run(ChatRequest(session_id="eval-deepeval", message=q["question"]))
+        budget.add(response.total_cost_usd)
         retrieval_context: list[str | Any] = [c.snippet for c in response.citations] or ["(no context was retrieved)"]
         test_case = LLMTestCase(
             input=q["question"],
@@ -158,6 +172,7 @@ async def run_deepeval_suite(settings: Settings, judge_model_name: str = DEFAULT
             )
         )
 
+    budget.check()
     return DeepEvalSuiteResult(results=results)
 
 

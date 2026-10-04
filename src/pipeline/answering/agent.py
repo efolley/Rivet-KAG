@@ -174,15 +174,21 @@ class DeepAgentAnswerer:
         worst_case = TokenUsage(input_tokens=input_tokens, output_tokens=MAX_OUTPUT_TOKENS)
         return cost_usd(self._model_name, worst_case)
 
-    async def answer(self, query: str, context: list[Citation]) -> AnswerResult:
+    async def answer(self, query: str, context: list[Citation], max_cost_usd: float | None = None) -> AnswerResult:
         prompt = f"Question: {query}\n\nContext:\n{_format_context(context)}"
+        budget = ANSWER_BUDGET_USD if max_cost_usd is None else max_cost_usd
 
-        estimated_cost = await self._estimate_cost_usd(prompt)
-        if estimated_cost is not None and estimated_cost > ANSWER_BUDGET_USD:
+        # budget <= 0 means the caller already decided this request must not spend anything
+        # (e.g. a session over its daily cap -- see src/api/routes/chat.py's SESSION_DAILY_BUDGET_USD
+        # check). Skip the pre-flight token count entirely in that case: there's no estimate
+        # that could change the outcome, and a failed/unknown estimate must not accidentally let
+        # a zero-budget request through.
+        estimated_cost = None if budget <= 0 else await self._estimate_cost_usd(prompt)
+        if budget <= 0 or (estimated_cost is not None and estimated_cost > budget):
             log.warning(
-                "Pre-flight estimate $%.4f exceeds the $%.2f answer budget for %s; skipping the LLM call",
-                estimated_cost,
-                ANSWER_BUDGET_USD,
+                "Pre-flight estimate $%s exceeds the $%.4f answer budget for %s; skipping the LLM call",
+                f"{estimated_cost:.4f}" if estimated_cost is not None else "n/a",
+                budget,
                 self._model_name,
             )
             return AnswerResult(

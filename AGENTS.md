@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Guidance for whoever (human or agent) develops in this repo next. `README.md` is for people using
 or evaluating Rivet KAG; this file is for people changing it.
@@ -105,7 +105,7 @@ for what's still missing — don't assume anything there is implemented without 
   - `evals/deepeval_suite.py` (`make deepeval`, needs `uv sync --group eval`): `GEval`
     (correctness rubric) + `FaithfulnessMetric` (citation faithfulness) via a custom
     `AnthropicJudgeModel` (`deepeval.models.DeepEvalBaseLLM` wrapping `ChatAnthropic`) so the
-    judge is Claude, not DeepEval's OpenAI-shaped default. **Real bug found and fixed**:
+    judge is Codex, not DeepEval's OpenAI-shaped default. **Real bug found and fixed**:
     `deepeval` registers a pytest plugin (`deepeval.plugins.plugin`) that calls `load_dotenv()`
     during pytest's *plugin-loading* phase — before `conftest.py` ever runs, so its existing
     dotenv-neutering was too late. Caught because installing the `eval` group and running the
@@ -191,7 +191,7 @@ Ollama (`llama3.2:latest`) for free. With a real but **out-of-credit** Anthropic
 valid, account balance too low): the LLM router hit a real `400` from `api.anthropic.com`
 ("credit balance too low") and **gracefully fell back to querying both sources**, confirmed live
 (not mocked) for the first time; the Ollama-backed `DeepAgentAnswerer` then answered normally.
-`evals/judge.py`'s own grading call (hardcoded to Claude regardless of `LLM_PROVIDER`) hit the
+`evals/judge.py`'s own grading call (hardcoded to Codex regardless of `LLM_PROVIDER`) hit the
 same billing error and exited uncaught — expected, since that script has no fallback by design.
 **Net: the real happy path for any Anthropic-backed stage is still unverified** — this session
 upgraded the known failure mode from "401 on an invalid key" to "400 on a valid key with no
