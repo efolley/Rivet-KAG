@@ -10,11 +10,12 @@ falls back the same way if a call fails, so one bad LLM response never breaks a 
 import logging
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, SecretStr
 
 from src.config import Settings
 from src.pipeline.base import Plan
+from src.pipeline.pricing import cost_usd, usage_from_ai_message
 from src.schemas import SourceType
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class RouterDecision(BaseModel):
 
 class LangChainRouter:
     def __init__(self, settings: Settings) -> None:
+        self._model_name = settings.llm_model
         llm = ChatAnthropic(
             model_name=settings.llm_model,
             api_key=SecretStr(settings.anthropic_api_key),
@@ -48,14 +50,30 @@ class LangChainRouter:
             timeout=10,
             stop=None,
         )
-        self._router = llm.with_structured_output(RouterDecision)
+        # include_raw=True trades the plain RouterDecision return for {"raw", "parsed",
+        # "parsing_error"} -- "raw" is the underlying AIMessage, needed for cost accounting
+        # (usage_metadata isn't available once with_structured_output extracts just the schema).
+        self._router = llm.with_structured_output(RouterDecision, include_raw=True)
 
     async def parse(self, message: str) -> Plan:
         try:
             result = await self._router.ainvoke([SystemMessage(SYSTEM_PROMPT), HumanMessage(message)])
-            if not isinstance(result, RouterDecision):
+            if not isinstance(result, dict):
                 raise TypeError(f"unexpected router output type: {type(result)!r}")
+            parsed = result.get("parsed")
+            if not isinstance(parsed, RouterDecision):
+                raise TypeError(f"unexpected router output type: {type(parsed)!r}")
         except Exception:
             log.exception("LLM router failed; falling back to querying both sources")
             return Plan(intent="question_answering", query=message, sources=BOTH_SOURCES)
-        return Plan(intent=result.intent, query=message, sources=result.sources or BOTH_SOURCES)
+
+        raw = result.get("raw")
+        usage = usage_from_ai_message(raw) if isinstance(raw, AIMessage) else None
+        return Plan(
+            intent=parsed.intent,
+            query=message,
+            sources=parsed.sources or BOTH_SOURCES,
+            model=self._model_name,
+            usage=usage,
+            cost_usd=cost_usd(self._model_name, usage) if usage is not None else None,
+        )

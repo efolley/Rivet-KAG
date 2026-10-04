@@ -2,7 +2,7 @@
 
 import asyncio
 
-from src.pipeline.base import Plan
+from src.pipeline.base import AnswerResult, Plan
 from src.schemas import Citation, SourceType
 
 
@@ -45,8 +45,9 @@ class StubGraphRetriever:
 class StubAnswerer:
     """Used when no ANTHROPIC_API_KEY is set; see pipeline.answering.agent.DeepAgentAnswerer."""
 
-    async def answer(self, query: str, context: list[Citation]) -> str:
-        return (
+    async def answer(self, query: str, context: list[Citation]) -> AnswerResult:
+        text = (
             f'[stub answer] You asked: "{query}". Found {len(context)} context items. '
             "Set ANTHROPIC_API_KEY to get a real, generated answer."
         )
+        return AnswerResult(text=text)

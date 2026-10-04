@@ -3,7 +3,7 @@
 Guidance for whoever (human or agent) develops in this repo next. `README.md` is for people using
 or evaluating Rivet KAG; this file is for people changing it.
 
-## Current progress (as of 2026-10-03)
+## Current progress (as of 2026-10-04)
 
 **Branch:** work is on `dev`, branched off `feat/phase_3` and pushed to `origin/dev`. Three
 branches are now in flight — `main` (`80932a0`), `feat/phase_3` (unmerged, pushed), `dev`
@@ -25,12 +25,42 @@ commits by default.
   unmerged**. See the README's "Platform: auth, history and messaging" section for what's real.
   Docker packaging stays explicitly postponed (not a gap to fill).
 
-**Not started:** most of Phase 4 (per-call cost accounting, prompt caching, the full DeepEval
-suite, release gates, alerting, demo GIF) and the "Agent actions" backlog item. The "Production
+**Not started:** most of Phase 4 (prompt caching, job-level spend limits, the full DeepEval suite,
+release gates, alerting, demo GIF) and the "Agent actions" backlog item. The "Production
 readiness" section of the README is a *design*, not code, for what's still missing — don't assume
 anything there is implemented without checking.
 
-**Done on `dev` (2026-10-03):**
+**Done on `dev` (2026-10-04):**
+- **Per-stage cost accounting + pre-flight budget rejection** — `src/pipeline/pricing.py` (a
+  small `PRICING` table covering only the models this project's router/answerer can actually
+  select, `PARSE_BUDGET_USD`/`ANSWER_BUDGET_USD`/`TOTAL_BUDGET_USD` constants matching the
+  README's cost table, `usage_from_ai_message`/`cost_usd` helpers). `Plan` and the new
+  `AnswerResult` dataclass (both in `src/pipeline/base.py`, replacing `Answerer.answer()`'s bare
+  `str` return) now carry `model`/`usage`/`cost_usd`; `StubParser`/`StubAnswerer` leave them
+  `None` (no LLM call, not $0.00 — "unknown" vs "free" is a real distinction the pricing table
+  enforces: an unpriced model also returns `None`, never a guessed price).
+  `LangChainRouter.parse()` switched to `with_structured_output(..., include_raw=True)` to get
+  at the raw `AIMessage.usage_metadata` for cost accounting (its plain-`RouterDecision` return
+  was discarding that). `DeepAgentAnswerer._estimate_cost_usd` runs a real pre-flight check via
+  each model's own `get_num_tokens_from_messages` — Anthropic's is backed by the live
+  `messages.count_tokens` API (confirmed live: reaches `api.anthropic.com`, a real 401/400 comes
+  back when the call itself can't be billed, exactly the existing "reaches the real endpoint and
+  fails for the expected reason" verification standard), OpenAI's is a local `tiktoken` count,
+  Ollama's a cheap local heuristic — one call site, no provider branching needed. Exceeding
+  `ANSWER_BUDGET_USD` at the worst-case estimate (input tokens + the configured 1024-token output
+  cap) skips the real LLM call entirely (`AnswerResult.budget_rejected=True`, `cost_usd=0.0`).
+  `Pipeline.run()` sums `plan.cost_usd + answer_result.cost_usd` into `ChatResponse.total_cost_usd`
+  (`None` if either is unknown, never silently treated as $0) and logs a warning if it exceeds
+  `TOTAL_BUDGET_USD`; both values are also pushed into the per-stage Langfuse spans. Tests:
+  `tests/test_pricing.py` (new) and new cases in `tests/test_agent.py`/`tests/test_router.py` —
+  all fully mocked (`ChatAnthropic.get_num_tokens_from_messages` is monkeypatched at the class
+  level, since it's a pydantic model and otherwise makes a real network call even under a fake
+  key, which the first version of these tests actually did before being fixed). Verified live
+  through a running Ollama-backed answerer: real `input_tokens`/`output_tokens`/`cost_usd=0.0`
+  (Ollama is free) land in the trace; the router's Anthropic call failed on the same out-of-credit
+  key as before and fell back cleanly, leaving `total_cost_usd=null` (not a wrong $0) exactly per
+  the "unknown stage cost poisons the total" design. Still not implemented: job-level spend
+  limits and prompt caching (see README's "Cost controls (tokenomics)").
 - **Local-only Langfuse tracing** — `src/clients/langfuse.py` + `Pipeline.run()` in
   `src/pipeline/orchestrator.py`. Hard-guarded to loopback hosts only (`_is_local()`); never
   talks to Langfuse Cloud regardless of `LANGFUSE_HOST`. No bundled local Langfuse server —

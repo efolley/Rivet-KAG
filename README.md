@@ -2,7 +2,7 @@
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
 
-> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing and local-only Langfuse tracing all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 10/10 retrieval-accuracy check (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). Full cost instrumentation and the richer trace field set are still a design, not code — see [Production readiness](#production-readiness).
+> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), per-stage cost accounting with a pre-flight budget check, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing and local-only Langfuse tracing all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 10/10 retrieval-accuracy check (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). Job-level spend limits, prompt caching and the richer trace field set are still a design, not code — see [Production readiness](#production-readiness).
 
 <!-- TODO: demo GIF -->
 
@@ -14,12 +14,13 @@
 - Hybrid retrieval: semantic search (Milvus) and Cypher queries (Neo4j) run in parallel
 - Input guardrails and regex-based PII masking, always on, before anything reaches an LLM
 - Agentic RAG (DeepAgents) with Pydantic-validated structured output
+- Per-stage cost accounting and a pre-flight budget check before the answerer call (`src/pipeline/pricing.py`)
 - LLM-as-a-judge script (`evals/judge.py`) grading real pipeline answers against a reference
 - Upload Excel, CSV, Markdown and PDF files, ingested through LlamaIndex
 - JWT auth (register/login/me), Postgres-backed chat history, audit log and ingestion job tracking
 - Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
 - Local-only Langfuse tracing (never Langfuse Cloud) and evals (`make eval`, `make judge`; DeepEval is still planned)
-- Planned: agent actions (change data, analysis and plots), cost budgets, release gates and the richer trace field set — see [Production readiness](#production-readiness)
+- Planned: agent actions (change data, analysis and plots), job-level spend limits, prompt caching, release gates and the richer trace field set — see [Production readiness](#production-readiness)
 
 ## Architecture
 
@@ -168,22 +169,23 @@ Design targets for cost, quality and observability, tracked in the [roadmap](#ro
 
 ### Cost controls (tokenomics)
 
-One **inspection** = one `/api/chat` request/response cycle. Target: **≤$0.15/inspection**, split into a per-stage budget so no single stage can blow the total (prices are current Claude API rates — Sonnet 5 $2/$10 per MTok in/out, Haiku 4.5 $1/$5):
+**Per-stage cost accounting and the pre-flight budget rejection are implemented** (`src/pipeline/pricing.py`, wired into `src/pipeline/parsing/router.py` and `src/pipeline/answering/agent.py`). One **inspection** = one `/api/chat` request/response cycle. Target: **≤$0.15/inspection**, split into a per-stage budget so no single stage can blow the total:
 
 | Stage                     | Spend driver              | Budget            | Notes                                                                                                                |
 | ------------------------- | ------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | PII masking               | —                        | $0.00             | Regex/NER, no LLM call — masking is a bad place to spend tokens                                                     |
-| Parse/route               | small classification call | ≤$0.01           | Structured output, ~300 in / 100 out tokens. Use Haiku 4.5, not Sonnet — classification doesn't need a bigger model |
+| Parse/route               | small classification call | ≤$0.01 (`PARSE_BUDGET_USD`) | Structured output. Real cost computed from the router's `AIMessage.usage_metadata` (via `include_raw=True`) — no pre-flight gate, the stage is cheap enough it isn't worth one |
 | Retrieve (vector + graph) | —                        | $0.00             | Local embedding (fastembed) + rule-based Cypher generation; only infra cost, no per-token spend                      |
 | Merge / ROI-compress      | optional reranker         | ≤$0.005          | See below                                                                                                            |
-| Answer synthesis          | agentic RAG               | ≤$0.12           | The dominant cost: cached system prompt + tool schemas, capped and compressed context                                |
-| **Total**           |                           | **≤$0.15** | Reject or fall back to a retrieval-only answer if the pre-flight estimate exceeds this                               |
+| Answer synthesis          | agentic RAG               | ≤$0.12 (`ANSWER_BUDGET_USD`) | The dominant cost: real cost summed across every `AIMessage` DeepAgents produces (it can round-trip the model more than once per request)                     |
+| **Total**           |                           | **≤$0.15 (`TOTAL_BUDGET_USD`)** | `ChatResponse.total_cost_usd` — logged as a warning if exceeded; `None` (not summed as $0) if any stage's model isn't in the pricing table            |
 
-- **Pre-flight estimation** — before the answerer call, run `messages.count_tokens` on the assembled prompt and skip the agent (return retrieval-only citations) rather than let an oversized prompt blow the budget after the fact.
-- **Actual cost accounting** — after every LLM call, read `response.usage` (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`) and multiply by the model's per-token price to get a real `cost_usd` for that stage. This is what lands in the trace — see [Observability and audit trail](#observability-and-audit-trail).
-- **Caching** — the answerer's system prompt and tool schemas are stable across requests; cache them (`cache_control: {type: "ephemeral"}`) so repeat requests pay roughly a tenth of the input cost for that portion. Watch `cache_read_input_tokens` — if it's zero across repeated requests, something is silently invalidating the prefix (a timestamp or unsorted JSON in the system prompt is the usual cause).
+- **Pricing table** (`PRICING` in `src/pipeline/pricing.py`) — covers only the models this project's router/answerer can actually select (the router's Anthropic model, and `src/pipeline/models.py`'s `MODEL_CATALOG`). Ollama models are priced $0 (local compute, no per-token API cost). A model not in the table returns `cost_usd=None` — genuinely unknown, never guessed as free.
+- **Pre-flight estimation** (`DeepAgentAnswerer._estimate_cost_usd`) — before the real agent call, count input tokens via the configured model's own `get_num_tokens_from_messages` on the assembled prompt: for Anthropic this calls the real `messages.count_tokens` API (verified live — see `CLAUDE.md`), for OpenAI it's a local `tiktoken` count, for Ollama a cheap local heuristic — each backend's best available method, no branching needed. Combined with a worst-case output estimate (`MAX_OUTPUT_TOKENS`, the same 1024-token cap passed to the model), if the estimate exceeds `ANSWER_BUDGET_USD` the real LLM call is skipped entirely and the context-only fallback answer is returned (`AnswerResult.budget_rejected=True`, `cost_usd=0.0` — no call was made, so nothing was spent). If the token count itself fails (network error, unsupported model), the budget check is skipped rather than blocking the request.
+- **Actual cost accounting** — after a successful LLM call, `usage_from_ai_message` reads langchain's standardized `usage_metadata` (`input_tokens`, `output_tokens`, and Anthropic's `input_token_details.cache_read`/`cache_creation`) and `cost_usd` multiplies by the model's per-token price. This lands in `StageTrace` (`model`, `input_tokens`, `output_tokens`, `cost_usd`, `budget_rejected`) and the matching Langfuse span — see [Observability and audit trail](#observability-and-audit-trail).
+- **Caching** — not yet implemented. The answerer's system prompt and tool schemas are stable across requests and a good caching candidate (`cache_control: {type: "ephemeral"}`), which would show up as non-zero `cache_read_tokens` in the trace above once added.
 - **ROI compression** — before merged context reaches the answerer, rank citations and keep only the highest-value ones per token: drop low-relevance chunks, cap total context (default 2,000 tokens). This is `merge_context` (`src/pipeline/merge.py`): dedupe by id, rank by retriever score (unscored citations sort last), then greedily fill the token budget (cheap char-based estimate, no LLM call) — always keeping at least one citation even if it alone exceeds the budget. There's no summarization step; chunks are kept verbatim or dropped.
-- **Job-level limits** — $0.15 is a per-request cap. Separately cap spend per session (e.g. $1/user/day) and per batch job (eval/judge runs, e.g. $5/run), each with a hard circuit breaker: a job that exceeds its budget mid-run stops, it doesn't degrade silently.
+- **Job-level limits** — not yet implemented. $0.15 is only a per-request cap today; a per-session (e.g. $1/user/day) and per-batch-job (eval/judge runs, e.g. $5/run) circuit breaker is still a design, not code.
 
 ### Evaluation and release gates
 
@@ -224,11 +226,12 @@ Golden-string matching — what `evals/check_retrieval.py` does — only works f
 | `output`                                  | the final answer text                                                    |
 | `sources_queried`, `intent`            | which of vector/graph were queried, and the router's intent classification |
 | `citations_count`                        |                                                                          |
+| `total_cost_usd`                         | `ChatResponse.total_cost_usd` — sum of the per-stage `cost_usd` values, `None` if any stage's model is unpriced |
 | `outcome`                                 | `success` / `guardrail_blocked` / `error`                          |
 
-Not yet implemented (needs the pending cost-accounting work — see [Cost controls](#cost-controls-tokenomics)): `total_latency_ms`/`total_cost_usd` as distinct rollup fields (the per-stage `duration_ms` values are there, just not pre-summed), token counts, and a `fallback_used` outcome value (the router/answerer's own fallback is logged but not yet surfaced into this field).
+Not yet implemented: `total_latency_ms` as a distinct rollup field (the per-stage `duration_ms` values are there, just not pre-summed), token counts at the request level (they're per-stage — see below), and a `fallback_used` outcome value (the router/answerer's own fallback is logged but not yet surfaced into this field).
 
-**Per-stage trace** (one child span per `timed()` call in the orchestrator, automatically nested under the request's root span via Langfuse's OTel context) — implemented: `name`, `detail` (as metadata), `duration_ms` (as output) — exactly what `StageTrace` in `src/schemas/chat.py` already carries, nothing invented. Not yet implemented: `model`, `input_tokens`/`output_tokens`/`cache_read_tokens`, `cost_usd`, `fallback_triggered`, `query_used`/`num_results`/`top_score`, `keywords`/`num_nodes_matched`, `error` detail — these need either the pending cost-accounting work or widening the `Retriever`/`RequestParser` protocols to expose more than they return today.
+**Per-stage trace** (one child span per `timed()`/`timed_llm()` call in the orchestrator, automatically nested under the request's root span via Langfuse's OTel context) — implemented, matching `StageTrace` in `src/schemas/chat.py`: `name`, `detail` (as metadata), `duration_ms` (as output), and for the LLM-backed stages (parse, answer) `model`, `input_tokens`, `output_tokens`, `cost_usd`, `budget_rejected` — see [Cost controls](#cost-controls-tokenomics) for how these are computed. Not yet implemented: `cache_read_tokens` as its own trace field (it's used in the cost calculation but not surfaced separately), `query_used`/`num_results`/`top_score` for vector retrieve, `keywords`/`num_nodes_matched` for graph retrieve, and per-stage `error` detail — these need widening the `Retriever` protocol to expose more than the citations it returns today.
 
 **Audit log** — append-only Postgres `chat_audit_log` is real (see [Platform](#platform-auth-history-and-messaging)), one row per request. It only stores `question_masked`, never the raw question — the audit trail must not become a second place PII leaks from. What's still a design, not code: 90-day retention (no expiry job runs yet), and the richer field set below (tokens, cost, cache state) — today's table has `session_id`, `user_id`, `question_masked`, `answer`, `sources_queried`, `citations_count`, `outcome`, `duration_ms`.
 
@@ -309,7 +312,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 **Phase 4: Quality and polish** — see [Production readiness](#production-readiness) for the full design
 
 - [X] Langfuse tracing, local-only, with the per-request/per-stage fields buildable from what the pipeline returns today (token/cost/model fields wait on the item below)
-- [ ] Per-stage cost accounting (`response.usage` → `cost_usd`) and the $0.15/inspection budget, with pre-flight `count_tokens` rejection
+- [X] Per-stage cost accounting (`response.usage` → `cost_usd`) and the $0.15/inspection budget, with pre-flight `count_tokens` rejection
 - [ ] Prompt caching for the answerer's system prompt and tool schemas
 - [ ] DeepEval with 30 golden questions, including LLM-as-a-judge (`GEval`, `FaithfulnessMetric`)
 - [ ] Release gates: quality/latency/cost/citation/HITL thresholds, enforced in CI

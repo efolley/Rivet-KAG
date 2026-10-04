@@ -7,20 +7,25 @@ never breaks a chat request — the citations found by retrieval are still shown
 synthesis fails.
 """
 
+import asyncio
 import logging
 from typing import Literal
 
 from deepagents import create_deep_agent
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr
 
 from src.config import Settings
+from src.pipeline.base import AnswerResult
+from src.pipeline.pricing import ANSWER_BUDGET_USD, TokenUsage, cost_usd, usage_from_ai_message
 from src.schemas import Citation
 
 log = logging.getLogger(__name__)
+
+MAX_OUTPUT_TOKENS = 1024
 
 SYSTEM_PROMPT = """You are a knowledge assistant. Answer the user's question using only the \
 context items given below — each is labelled with an id and comes from either a vector \
@@ -62,6 +67,29 @@ def _last_plain_text_answer(result: object) -> str | None:
     return None
 
 
+def _sum_usage(result: object) -> TokenUsage | None:
+    """DeepAgents can make several LLM round-trips per request (tool calls, retries); sum
+    usage across every AIMessage in the run so the stage's cost reflects the whole call, not
+    just the last turn. None when there's nothing to sum (e.g. the call never reached the
+    model)."""
+    if not isinstance(result, dict):
+        return None
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        return None
+    total = TokenUsage()
+    found = False
+    for msg in messages:
+        if isinstance(msg, AIMessage) and msg.usage_metadata:
+            found = True
+            u = usage_from_ai_message(msg)
+            total.input_tokens += u.input_tokens
+            total.output_tokens += u.output_tokens
+            total.cache_read_tokens += u.cache_read_tokens
+            total.cache_creation_tokens += u.cache_creation_tokens
+    return total if found else None
+
+
 def _fallback_answer(context: list[Citation]) -> str:
     if not context:
         return "I couldn't find anything relevant to answer that question."
@@ -101,26 +129,63 @@ def _build_model(settings: Settings) -> ChatAnthropic | ChatOpenAI | ChatOllama:
 
 class DeepAgentAnswerer:
     def __init__(self, settings: Settings) -> None:
-        model = _build_model(settings)
-        self._agent = create_deep_agent(model=model, system_prompt=SYSTEM_PROMPT, response_format=AgentAnswer)
+        self._model_name = settings.llm_model
+        self._model = _build_model(settings)
+        self._agent = create_deep_agent(model=self._model, system_prompt=SYSTEM_PROMPT, response_format=AgentAnswer)
 
-    async def answer(self, query: str, context: list[Citation]) -> str:
+    async def _estimate_cost_usd(self, prompt: str) -> float | None:
+        """Pre-flight estimate before the real call: input tokens via the model's own
+        get_num_tokens_from_messages (Anthropic's is backed by the real messages.count_tokens
+        API; OpenAI's is a local tiktoken count; Ollama's is a cheap local heuristic -- each
+        model picks the best it has), plus a worst-case output cost at the configured output
+        cap. None means the model's price isn't in the catalog, so no budget verdict is possible
+        -- callers must not block as a side effect of unknown pricing."""
+        messages: list[BaseMessage] = [HumanMessage(content=prompt)]
+        try:
+            input_tokens = await asyncio.to_thread(self._model.get_num_tokens_from_messages, messages)
+        except Exception:
+            log.warning("Pre-flight token count failed for %s; skipping the budget check", self._model_name)
+            return None
+        worst_case = TokenUsage(input_tokens=input_tokens, output_tokens=MAX_OUTPUT_TOKENS)
+        return cost_usd(self._model_name, worst_case)
+
+    async def answer(self, query: str, context: list[Citation]) -> AnswerResult:
         prompt = f"Question: {query}\n\nContext:\n{_format_context(context)}"
+
+        estimated_cost = await self._estimate_cost_usd(prompt)
+        if estimated_cost is not None and estimated_cost > ANSWER_BUDGET_USD:
+            log.warning(
+                "Pre-flight estimate $%.4f exceeds the $%.2f answer budget for %s; skipping the LLM call",
+                estimated_cost,
+                ANSWER_BUDGET_USD,
+                self._model_name,
+            )
+            return AnswerResult(
+                text=_fallback_answer(context),
+                model=self._model_name,
+                usage=TokenUsage(),
+                cost_usd=0.0,
+                budget_rejected=True,
+            )
+
         try:
             result = await self._agent.ainvoke({"messages": [{"role": "user", "content": prompt}]})
         except Exception:
             log.exception("DeepAgents answerer call failed; falling back to a context-only summary")
-            return _fallback_answer(context)
+            return AnswerResult(text=_fallback_answer(context), model=self._model_name)
+
+        usage = _sum_usage(result)
+        cost = cost_usd(self._model_name, usage) if usage is not None else None
 
         structured = result.get("structured_response") if isinstance(result, dict) else None
         if isinstance(structured, AgentAnswer):
             log.info("agent answered confidence=%s citations=%s", structured.confidence, structured.citation_ids)
-            return structured.answer
+            return AnswerResult(text=structured.answer, model=self._model_name, usage=usage, cost_usd=cost)
 
         text = _last_plain_text_answer(result)
         if text:
             log.warning("structured_response missing; using the agent's final plain-text message instead")
-            return text
+            return AnswerResult(text=text, model=self._model_name, usage=usage, cost_usd=cost)
 
         log.error("DeepAgents answerer returned no usable output; falling back to a context-only summary")
-        return _fallback_answer(context)
+        return AnswerResult(text=_fallback_answer(context), model=self._model_name, usage=usage, cost_usd=cost)

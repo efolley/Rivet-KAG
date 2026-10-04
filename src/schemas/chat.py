@@ -28,9 +28,20 @@ class StageTrace(BaseModel):
     name: str
     detail: str
     duration_ms: float
+    # Cost accounting (see src/pipeline/pricing.py): populated for LLM-backed stages (parse,
+    # answer) when the model has a known price; None for everything else, including an unlisted
+    # model -- "unknown", never guessed as $0.
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    budget_rejected: bool = False
 
 
 class ChatResponse(BaseModel):
     answer: str
     citations: list[Citation]
     trace: list[StageTrace]
+    # Sum of each stage's cost_usd; None if any stage's cost is unknown (an unpriced model) --
+    # summing unknowns as 0 would understate the real spend.
+    total_cost_usd: float | None = None
