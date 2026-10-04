@@ -1,0 +1,26 @@
+# Enforces the release-gate thresholds (README's "Evaluation and release gates") in CI --
+# manually triggered, not on every push/PR like ci.yml. This repo has no ANTHROPIC_API_KEY (or
+# any live Milvus/Neo4j) configured as a secret today, so running this on every push would just
+# fail every time for a reason unrelated to the code -- see CLAUDE.md's development philosophy:
+# "CI sets neither [USE_STUBS nor a key], so it always runs the fully-stubbed path." This
+# workflow is the explicit, opt-in exception to that for whoever configures real credentials.
+#
+# To actually use this: add an ANTHROPIC_API_KEY repository secret, and point Milvus/Neo4j at
+# reachable instances (self-hosted runners, or services: containers with the data pre-loaded --
+# not set up here, since this project has no live infra in CI today). Until then, this workflow
+# exists but will fail with a clear "ANTHROPIC_API_KEY is required" message if run.
+name: Release gates
+on:
+  workflow_dispatch: {}
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
+      - run: uv sync --frozen --group eval
+      - run: uv run --group eval python -m evals.release_gates
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          USE_STUBS: "false"

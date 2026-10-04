@@ -69,12 +69,10 @@ async def judge_answer(judge: Any, question: str, reference: str, actual: str) -
     return result
 
 
-async def main() -> int:
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        sys.exit("ANTHROPIC_API_KEY is required: the answerer and the judge both call Claude.")
-    settings = settings.model_copy(update={"use_stubs": False})
-
+async def run_judge(settings: Any) -> list[tuple[str, JudgeVerdict]]:
+    """Runs the real pipeline + judge over every golden question with a reference_answer.
+    Returns (question, verdict) pairs -- the reusable core evals/release_gates.py calls
+    directly, separate from this module's own print-and-exit CLI below."""
     questions = [q for q in json.loads(QUESTIONS_PATH.read_text()) if q.get("reference_answer")]
     if not questions:
         sys.exit("No golden questions have a reference_answer to judge.")
@@ -82,14 +80,26 @@ async def main() -> int:
     pipeline = build_pipeline(settings)
     judge = build_judge(settings)
 
-    scores: list[int] = []
+    results = []
     for q in questions:
         response = await pipeline.run(ChatRequest(session_id="eval-judge", message=q["question"]))
         verdict = await judge_answer(judge, q["question"], q["reference_answer"], response.answer)
-        scores.append(verdict.score)
-        status = "PASS" if verdict.passed else "FAIL"
-        print(f"[{status}] {q['question']}\n       score={verdict.score} {verdict.rationale}")
+        results.append((q["question"], verdict))
+    return results
 
+
+async def main() -> int:
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        sys.exit("ANTHROPIC_API_KEY is required: the answerer and the judge both call Claude.")
+    settings = settings.model_copy(update={"use_stubs": False})
+
+    results = await run_judge(settings)
+    for question, verdict in results:
+        status = "PASS" if verdict.passed else "FAIL"
+        print(f"[{status}] {question}\n       score={verdict.score} {verdict.rationale}")
+
+    scores = [verdict.score for _, verdict in results]
     passed = sum(1 for s in scores if s >= PASS_THRESHOLD)
     mean = sum(scores) / len(scores)
     print(f"\n{passed}/{len(scores)} passed, mean score {mean:.1f}/5")

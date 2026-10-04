@@ -53,6 +53,7 @@ async def _record(
     sources_queried: str,
     outcome: str,
     duration_ms: float,
+    cost_usd: float | None = None,
 ) -> None:
     """Best-effort: a Postgres outage degrades history/audit logging, it must never fail the
     chat response itself."""
@@ -68,6 +69,7 @@ async def _record(
                 citations_count=citations_count,
                 outcome=outcome,
                 duration_ms=duration_ms,
+                cost_usd=cost_usd,
             )
         )
         await db.commit()
@@ -87,7 +89,16 @@ async def chat(req: ChatRequest, db: DbSessionDep, settings: SettingsDep, user_i
     cached = await _get_cached(key)
     if cached is not None:
         await _record(
-            db, req, user_id, question_masked, cached.answer, len(cached.citations), "", "success_cached", 0.0
+            db,
+            req,
+            user_id,
+            question_masked,
+            cached.answer,
+            len(cached.citations),
+            "",
+            "success_cached",
+            0.0,
+            cost_usd=cached.total_cost_usd,
         )
         return cached
 
@@ -116,6 +127,7 @@ async def chat(req: ChatRequest, db: DbSessionDep, settings: SettingsDep, user_i
         sources_queried,
         "success",
         duration_ms,
+        cost_usd=response.total_cost_usd,
     )
     await publish_event(
         "rivet.chat.completed",

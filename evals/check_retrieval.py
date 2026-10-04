@@ -37,10 +37,13 @@ def _check_graph(question: dict[str, object], citations: list[Citation]) -> tupl
     return not missing, f"expected {expected} in graph results, missing {missing}" if missing else "ok"
 
 
-async def main() -> int:
+async def run_retrieval_check() -> list[tuple[str, bool, str]]:
+    """Runs every golden question against the live retrievers. Returns (question, passed,
+    detail) tuples -- the reusable core evals/release_gates.py calls directly, separate from
+    this module's own print-and-exit CLI below."""
     questions = json.loads(QUESTIONS_PATH.read_text())
     vector, graph = MilvusRetriever(), Neo4jRetriever()
-    passed = 0
+    results = []
 
     for q in questions:
         question = str(q["question"])
@@ -50,10 +53,18 @@ async def main() -> int:
         else:
             citations = await graph.retrieve(question)
             ok, detail = _check_graph(q, citations)
-        passed += ok
+        results.append((question, ok, detail))
+
+    return results
+
+
+async def main() -> int:
+    results = await run_retrieval_check()
+    for question, ok, detail in results:
         print(f"[{'PASS' if ok else 'FAIL'}] {question}\n       {detail}")
 
-    total = len(questions)
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
     print(f"\n{passed}/{total} correct ({passed / total:.0%})")
     return 0 if passed == total else 1
 

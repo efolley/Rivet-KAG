@@ -53,6 +53,10 @@ class ChatAuditLog(Base):
     citations_count: Mapped[int]
     outcome: Mapped[str]  # "success" | "guardrail_blocked" | "error"
     duration_ms: Mapped[float]
+    # None whenever any stage's model is unpriced (see src/pipeline/pricing.py) or the request
+    # never reached a cost-accounted stage (guardrail_blocked/error) -- never a guessed $0. Feeds
+    # evals/check_alerts.py's "mean cost/request" condition.
+    cost_usd: Mapped[float | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

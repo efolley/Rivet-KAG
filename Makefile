@@ -1,4 +1,4 @@
-.PHONY: neo4j postgres redis kafka platform wait-platform up ingest eval judge dev dev-backend dev-frontend install lint test
+.PHONY: neo4j postgres redis kafka platform wait-platform up ingest eval judge deepeval gates alerts dev dev-backend dev-frontend install lint test
 
 neo4j:
 	brew services start neo4j
@@ -40,6 +40,17 @@ eval:
 
 judge:
 	uv run python -m evals.judge
+
+# deepeval/gates need the opt-in `eval` dependency group (not installed by default -- see
+# pyproject.toml's addopts and evals/deepeval_suite.py's module docstring for why).
+deepeval:
+	uv run --group eval python -m evals.deepeval_suite
+
+gates:
+	uv run --group eval python -m evals.release_gates
+
+alerts:
+	uv run python -m evals.check_alerts
 
 dev:
 	$(MAKE) -j2 dev-backend dev-frontend

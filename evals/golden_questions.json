@@ -48,5 +48,105 @@
     "question": "Which team owns the Compass project?",
     "graph_contains": ["Product"],
     "reference_answer": "The Product team owns the Compass project."
+  },
+  {
+    "question": "How do I enable multi-factor authentication?",
+    "vector_source": "support_faq.csv",
+    "reference_answer": "Open Settings then Security and choose an authenticator app; admins must use a hardware key."
+  },
+  {
+    "question": "What does the Compass dashboard show?",
+    "vector_source": "support_faq.csv",
+    "reference_answer": "Compass shows customer usage trends and retention; data refreshes every hour."
+  },
+  {
+    "question": "Where is customer data stored?",
+    "vector_source": "support_faq.csv",
+    "reference_answer": "Customer data is stored in EU regions; backups are kept for 30 days."
+  },
+  {
+    "question": "What are the support hours?",
+    "vector_source": "support_faq.csv",
+    "reference_answer": "Support answers Monday to Friday 08:00 to 18:00 CET; SEV1 issues are handled around the clock."
+  },
+  {
+    "question": "What should I do if I lose my laptop?",
+    "vector_source": "vpn_and_access_policy.md",
+    "reference_answer": "Report a lost or stolen laptop or key to the Security team immediately, and no later than one hour after you notice."
+  },
+  {
+    "question": "What authentication is required for production access?",
+    "vector_source": "vpn_and_access_policy.md",
+    "reference_answer": "Hardware security keys are required for production access and for anyone with admin rights."
+  },
+  {
+    "question": "When is VPN access enabled for a new employee?",
+    "vector_source": "vpn_and_access_policy.md",
+    "reference_answer": "VPN access is only enabled after you complete the mandatory security training, usually within the first week."
+  },
+  {
+    "question": "What happens on a new employee's first day?",
+    "vector_source": "onboarding_guide.md",
+    "reference_answer": "New employees receive their laptop on day one, and People Ops sends a welcome email the Friday before the start date with the schedule."
+  },
+  {
+    "question": "How do I request access to a dataset?",
+    "vector_source": "data_platform_handbook.md",
+    "reference_answer": "Ask for access to a dataset with a ticket; the data owner approves it and the Security team grants it through Okta groups."
+  },
+  {
+    "question": "What quality gate must a new Beacon model pass before release?",
+    "vector_source": "ml_model_release_checklist.md",
+    "reference_answer": "A new Beacon model must not reduce click-through on the holdout set by more than 1 percent, and P95 latency must stay under 120 ms."
+  },
+  {
+    "question": "Who leads the ML Engineering team?",
+    "graph_contains": ["Jonas Weber"],
+    "reference_answer": "Jonas Weber leads the ML Engineering team."
+  },
+  {
+    "question": "Who leads the Security team?",
+    "graph_contains": ["Elena Petrova"],
+    "reference_answer": "Elena Petrova leads the Security team."
+  },
+  {
+    "question": "Who leads the People Ops team?",
+    "graph_contains": ["Nadia Rahman"],
+    "reference_answer": "Nadia Rahman leads the People Ops team."
+  },
+  {
+    "question": "Who leads the Product team?",
+    "graph_contains": ["Hana Suzuki"],
+    "reference_answer": "Hana Suzuki leads the Product team."
+  },
+  {
+    "question": "Which team owns the Atlas project?",
+    "graph_contains": ["Data Platform"],
+    "reference_answer": "The Data Platform team owns the Atlas project."
+  },
+  {
+    "question": "Which team owns the Sentinel project?",
+    "graph_contains": ["Security"],
+    "reference_answer": "The Security team owns the Sentinel project."
+  },
+  {
+    "question": "What tools does the Compass project use?",
+    "graph_contains": ["Grafana"],
+    "reference_answer": "Compass uses Grafana."
+  },
+  {
+    "question": "What tools does the Sentinel project use?",
+    "graph_contains": ["Wazuh", "Okta"],
+    "reference_answer": "Sentinel uses Wazuh and Okta."
+  },
+  {
+    "question": "What tools does the Harbor project use?",
+    "graph_contains": ["Okta"],
+    "reference_answer": "Harbor uses Okta."
+  },
+  {
+    "question": "Who works on the Atlas project?",
+    "graph_contains": ["Priya Nair", "Marcus Chen", "Sofia Alvarez", "Tom Baker"],
+    "reference_answer": "Priya Nair leads Atlas; Marcus Chen and Sofia Alvarez are data engineers on it; Tom Baker handles access review."
   }
 ]

@@ -6,8 +6,11 @@ observe a difference either way — that's the point.
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.clients.kafka import publish_event
+from src.db import ChatAuditLog
 from src.main import app
 from src.schemas import ChatResponse
 
@@ -54,6 +57,21 @@ def test_chat_still_responds_when_redis_is_unreachable(monkeypatch: pytest.Monke
 
     assert r.status_code == 200
     assert r.json()["answer"]
+
+
+async def test_chat_records_total_cost_usd_in_the_audit_log(db_session: AsyncSession) -> None:
+    # Stub pipeline makes no LLM call, so total_cost_usd is genuinely None (no stage priced) --
+    # this confirms the column round-trips end to end (ChatResponse -> ChatAuditLog), not any
+    # particular value. See src/db/models.py's ChatAuditLog.cost_usd and evals/check_alerts.py,
+    # which this column exists to feed.
+    r = client.post("/api/chat", json={"session_id": "cost-audit-test", "message": "Who is on the data team?"})
+    assert r.status_code == 200
+
+    result = await db_session.execute(
+        select(ChatAuditLog).where(ChatAuditLog.session_id == "cost-audit-test")
+    )
+    row = result.scalar_one()
+    assert row.cost_usd == r.json()["total_cost_usd"]
 
 
 async def test_publish_event_swallows_a_broken_producer(monkeypatch: pytest.MonkeyPatch) -> None:
