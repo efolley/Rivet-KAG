@@ -24,19 +24,25 @@ def _answerer_has_credentials(settings: Settings) -> bool:
     return bool(settings.anthropic_api_key)
 
 
-def build_pipeline(settings: Settings) -> Pipeline:
+def build_pipeline(settings: Settings, allow_actions: bool = False) -> Pipeline:
     # Retrieval is real once USE_STUBS=false (needs Milvus + Neo4j reachable, e.g. after
     # `make neo4j` + `make ingest`). The LLM router is Anthropic-only and used whenever
     # ANTHROPIC_API_KEY is configured, independent of USE_STUBS. The DeepAgents answerer's
     # backend is picked by settings.llm_provider (Anthropic/OpenAI/Ollama); it falls back to
     # the stub when that provider has no usable credentials. PII masking is always real:
     # it's local and free, no reason to stub it. CI sets no API key and USE_STUBS defaults
-    # true, so it stays fully offline.
+    # true, so it stays fully offline. allow_actions binds the real answerer's write-capable
+    # tools (see README's "Agent actions") -- StubAnswerer never gets them, since it never
+    # calls an LLM in the first place.
     retrievers: list[Retriever] = (
         [StubVectorRetriever(), StubGraphRetriever()] if settings.use_stubs else [MilvusRetriever(), Neo4jRetriever()]
     )
     parser: RequestParser = LangChainRouter(settings) if settings.anthropic_api_key else StubParser()
-    answerer: Answerer = DeepAgentAnswerer(settings) if _answerer_has_credentials(settings) else StubAnswerer()
+    answerer: Answerer = (
+        DeepAgentAnswerer(settings, enable_actions=allow_actions)
+        if _answerer_has_credentials(settings)
+        else StubAnswerer()
+    )
     return Pipeline(
         parser=parser,
         masker=RegexPIIMasker(),

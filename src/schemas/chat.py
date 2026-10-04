@@ -14,6 +14,10 @@ class ChatRequest(BaseModel):
     # server's configured default" (settings.llm_provider / settings.llm_model).
     llm_provider: LLMProvider | None = None
     llm_model: str | None = None
+    # Opt-in, off by default: when True, the answerer agent gets write-capable tools that can
+    # propose a Milvus/Neo4j change (never apply one directly) -- see README's "Agent actions".
+    # False means those tools aren't bound to the agent at all, not just "discouraged".
+    allow_actions: bool = False
 
 
 class Citation(BaseModel):
@@ -45,3 +49,7 @@ class ChatResponse(BaseModel):
     # Sum of each stage's cost_usd; None if any stage's cost is unknown (an unpriced model) --
     # summing unknowns as 0 would understate the real spend.
     total_cost_usd: float | None = None
+    # ids of any pending DataEditProposal rows the agent created this turn (empty unless
+    # req.allow_actions was True) -- nothing has changed in Milvus/Neo4j yet, see
+    # GET /api/actions and POST /api/actions/{id}/apply.
+    proposed_action_ids: list[int] = []

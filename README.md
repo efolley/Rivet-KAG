@@ -2,7 +2,7 @@
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
 
-> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), per-stage cost accounting with a pre-flight budget check, session- and batch-job-level spend circuit breakers, prompt caching, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing, local-only Langfuse tracing, a 30-question DeepEval suite (`GEval` + `FaithfulnessMetric`), release gates and an alerting check all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 30/30 live retrieval-accuracy pass (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). The richer trace field set is still a design, not code — see [Production readiness](#production-readiness).
+> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), opt-in propose-then-human-apply agent actions, per-stage cost accounting with a pre-flight budget check, session- and batch-job-level spend circuit breakers, prompt caching, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing, local-only Langfuse tracing, a 30-question DeepEval suite (`GEval` + `FaithfulnessMetric`), release gates and an alerting check all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 30/30 live retrieval-accuracy pass (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering), [Agent actions](#agent-actions) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). The richer trace field set is still a design, not code — see [Production readiness](#production-readiness).
 
 <!-- TODO: demo GIF -->
 
@@ -14,13 +14,14 @@
 - Hybrid retrieval: semantic search (Milvus) and Cypher queries (Neo4j) run in parallel
 - Input guardrails and regex-based PII masking, always on, before anything reaches an LLM
 - Agentic RAG (DeepAgents) with Pydantic-validated structured output
+- Agent actions: the answerer can *propose* a data edit (vector chunk text, graph node property); nothing is written until a human reviews and applies it (`GET /api/actions`, `POST /api/actions/{id}/apply`/`reject`)
 - Per-stage cost accounting and a pre-flight budget check before the answerer call, plus session- and batch-job-level spend circuit breakers (`src/pipeline/pricing.py`)
 - LLM-as-a-judge script (`evals/judge.py`) grading real pipeline answers against a reference
 - Upload Excel, CSV, Markdown and PDF files, ingested through LlamaIndex
 - JWT auth (register/login/me), Postgres-backed chat history, audit log and ingestion job tracking
 - Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
 - Local-only Langfuse tracing (never Langfuse Cloud) and evals (`make eval`, `make judge`, `make deepeval`, `make gates`, `make alerts`)
-- Planned: agent actions (change data, analysis and plots) and the richer trace field set — see [Production readiness](#production-readiness)
+- Planned: analysis/plotting agent actions and the richer trace field set — see [Production readiness](#production-readiness)
 
 ## Architecture
 
@@ -151,6 +152,19 @@ $ make eval
 `evals/judge.py` (`make judge`) goes further: it runs the *actual* pipeline end to end — real retrieval, real router, real DeepAgents answer — and has Claude grade each answer against a reference (see [LLM-as-a-judge](#llm-as-a-judge)). Needs `ANTHROPIC_API_KEY` and costs real money to run (one answering call plus one judging call per question). Its request shape has been checked against the live API with the only key available in this environment — valid but out of credit — and gets a real `400` billing error, not a malformed-request error, but it hasn't been run end to end with a funded key yet. `evals/deepeval_suite.py` (`make deepeval`) is the fuller version — see [LLM-as-a-judge](#llm-as-a-judge) — verified the same way.
 
 Both scripts are hand-rolled precursors to the "DeepEval, 25 golden questions" Phase 4 item — same idea, smaller and framework-free.
+
+## Agent actions
+
+The answerer can be given **write** capability — but only ever to *propose* a change, never to make one. This is an opt-in per request (`ChatRequest.allow_actions`, default `false`); when set, `DeepAgentAnswerer` binds two extra tools (`src/pipeline/answering/tools.py`) and a short addendum is appended to its system prompt explaining the propose-only contract. With `allow_actions` left at its default, these tools aren't bound at all — not just unused, structurally unavailable to that agent instance (`tests/test_agent.py::test_deep_agent_answerer_binds_action_tools_only_when_enabled`).
+
+**Why propose-then-apply, not direct writes.** The answerer is driven by free-text chat input from anyone who can reach `/api/chat` — no audit trail, no undo, and prompt-injection-shaped input is exactly what it's designed to answer from. Giving it direct write access to Milvus/Neo4j would mean a bad or adversarial prompt causes a real, silent data change. A full LangGraph `interrupt_on` + checkpointer pause-mid-execution flow would close this more completely but is a much larger addition than this project's scope calls for (see [Development philosophy](CLAUDE.md)); instead, every write is split into two steps that can never be collapsed into one:
+
+1. **Propose** (`src/pipeline/actions.py`'s `propose_vector_chunk_update`/`propose_graph_property_update`, called only via the two agent tools) — reads the current value (so there's an `old_value` to diff against), validates the target exists, and inserts a `DataEditProposal` row (Postgres: `session_id`, `kind`, `target`, `old_value`, `new_value`, `reason`, `status="pending"`). This step **never touches Milvus or Neo4j** — it's pure read-plus-audit-insert. The question's `session_id` and the collected proposal ids reach the tool only via `contextvars` (`current_session_id`, `proposed_ids`) set around the agent call in `DeepAgentAnswerer.answer`, never as a model-suppliable argument, so the agent can't forge whose session a proposal belongs to. The answer returned to the chat UI says a change is pending review and lists its id (`ChatResponse.proposed_action_ids`); it does not say the change has happened.
+2. **Apply or reject** (`POST /api/actions/{id}/apply` / `/reject`, `src/api/routes/actions.py`) — a separate, human-initiated HTTP call with no agent involvement. Only `apply_proposal` ever writes to Milvus (`client.upsert`) or Neo4j (`SET n[$prop] = $value`); it re-checks the proposal is still `pending` (so it can't be applied or rejected twice) and records `decided_at`. A failure at apply time (target deleted since the proposal was made) marks the row `rejected` with an `error`, rather than raising.
+
+**Scoping.** Graph property updates are restricted to `ALLOWED_GRAPH_LABELS` (`Employee`, `Team`, `Project`, `Tool`, `Document` — the labels that actually exist in `source_data/graph_data/*.csv`), checked before the label is interpolated into the Cypher string (labels can't be parameterized). Vector chunk updates re-embed the new text (`src/ingestion/embeddings.py`) and preserve the chunk's other fields (`source`, `doc_type`, `heading`, `chunk_index`) rather than overwriting them.
+
+`GET /api/actions` (optional `?status=pending|applied|rejected`) lists proposals for the Data Management UI to review. Verified live end to end against real Postgres, Milvus and Neo4j, and against a local Ollama model actually choosing to call the propose tool from a natural-language request and the subsequent apply call performing the real Milvus write.
 
 ## Platform: auth, history and messaging
 
@@ -323,7 +337,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 - [X] DeepEval with 30 golden questions, including LLM-as-a-judge (`GEval`, `FaithfulnessMetric`) — `evals/deepeval_suite.py` (`make deepeval`)
 - [X] Release gates: quality/latency/cost/citation thresholds, manually enforceable in CI — `evals/gates.py` (pure, unit-tested) + `evals/release_gates.py` (`make gates`) + `.github/workflows/release-gates.yml` (`workflow_dispatch`, needs a real `ANTHROPIC_API_KEY` secret this repo doesn't have — see the workflow file). HITL thresholds are intentionally never enforced: no production traffic exists to sample from.
 - [X] Alerting on the conditions in [Observability and audit trail](#observability-and-audit-trail) — `evals/alerts.py` (pure, unit-tested) + `evals/check_alerts.py` (`make alerts`), reading real `chat_audit_log` rows. 4 of 6 conditions are genuinely computable today; 2 aren't (see below) — this is a manual/cron script, not a real alerting pipeline (no Prometheus/Alertmanager/paging integration exists in this project).
-- [ ] Agent functionality for edit/update
+- [X] Agent functionality for edit/update — propose-then-human-apply, opt-in per request (`allow_actions`) — see [Agent actions](#agent-actions)
 - [ ] Demo GIF
 
 ## License

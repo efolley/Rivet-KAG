@@ -60,6 +60,30 @@ class ChatAuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class DataEditProposal(Base):
+    """A write the agent wants to make to Milvus or Neo4j, pending human review -- see README's
+    "Agent actions". The agent (src/pipeline/answering/tools.py) can only ever INSERT a row
+    here; nothing in Milvus/Neo4j changes until a human calls POST /api/actions/{id}/apply
+    (src/api/routes/actions.py), which is the only code path that actually writes to either
+    store. This table is the full audit trail of both the proposal and, once decided, the
+    outcome -- there is no other record of agent-initiated data changes.
+    """
+
+    __tablename__ = "data_edit_proposals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[str] = mapped_column(index=True)
+    kind: Mapped[str]  # "vector_chunk" | "graph_property"
+    target: Mapped[str]  # chunk id, or "Label:name:property"
+    old_value: Mapped[str | None]
+    new_value: Mapped[str]
+    reason: Mapped[str]  # the agent's own stated reason, shown to the human reviewer verbatim
+    status: Mapped[str] = mapped_column(default="pending")  # "pending" | "applied" | "rejected"
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    decided_at: Mapped[datetime | None]
+    error: Mapped[str | None]  # set if an "applied" attempt actually failed against the store
+
+
 class IngestionJob(Base):
     """One row per /api/files upload, tracking ingestion progress/outcome."""
 

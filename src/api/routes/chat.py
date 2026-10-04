@@ -114,13 +114,17 @@ async def _session_spend_24h(db: AsyncSession, session_id: str) -> float | None:
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, db: DbSessionDep, settings: SettingsDep, user_id: CurrentUserIdDep) -> ChatResponse:
-    pipeline = get_pipeline_for(req.llm_provider, req.llm_model)
+    pipeline = get_pipeline_for(req.llm_provider, req.llm_model, req.allow_actions)
     # Masked independently of the pipeline's own "pii" stage: this is for logging/caching, and
     # must hold even on paths (guardrail block, error) where the pipeline never gets that far.
     question_masked = mask_pii(req.message)
     key = _cache_key(settings, req, question_masked)
 
-    cached = await _get_cached(key)
+    # Never cache (read or write) an actions-enabled request: a cached ChatResponse's
+    # proposed_action_ids point at proposals tied to the session that *first* asked this
+    # question -- replaying it for a different session would hand back someone else's pending
+    # proposal ids, which is wrong regardless of whether Redis itself is trustworthy.
+    cached = None if req.allow_actions else await _get_cached(key)
     if cached is not None:
         await _record(
             db,
@@ -166,7 +170,8 @@ async def chat(req: ChatRequest, db: DbSessionDep, settings: SettingsDep, user_i
         raise
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
 
-    await _set_cached(key, response, settings.response_cache_ttl_seconds)
+    if not req.allow_actions:
+        await _set_cached(key, response, settings.response_cache_ttl_seconds)
     sources_queried = ",".join(sorted({c.source_type for c in response.citations}))
     await _record(
         db,

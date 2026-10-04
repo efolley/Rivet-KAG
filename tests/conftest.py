@@ -53,7 +53,7 @@ def _no_real_kafka(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
+async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSession, None]:
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False}
     )
@@ -66,6 +66,11 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    # src/pipeline/actions.py calls get_session() directly (it needs a session from inside an
+    # agent tool call, which has no FastAPI request to inject one into), bypassing
+    # dependency_overrides entirely -- patch its imported reference too, so proposal
+    # read/writes in tests hit this same in-memory engine instead of a real Postgres.
+    monkeypatch.setattr("src.pipeline.actions.get_session", override_get_session)
     try:
         async with sessionmaker() as session:
             yield session

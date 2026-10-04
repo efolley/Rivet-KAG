@@ -20,6 +20,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr
 
 from src.config import Settings
+from src.pipeline.answering.tools import ACTION_TOOLS, current_session_id, proposed_ids
 from src.pipeline.base import AnswerResult
 from src.pipeline.pricing import ANSWER_BUDGET_USD, TokenUsage, cost_usd, usage_from_ai_message
 from src.schemas import Citation
@@ -39,6 +40,15 @@ plainly instead of guessing.
 an id that isn't in the context.
 - Set `confidence` to "low" if the context only partially covers the question, or "high" if \
 it clearly answers it."""
+
+ACTIONS_ADDENDUM = """
+
+You also have tools to propose a change to a vector document chunk or a graph node property \
+(propose_vector_chunk_update, propose_graph_property_update). These tools NEVER apply a change \
+immediately -- they only record a pending proposal for a human to review and approve. Only use \
+them when the user explicitly asks you to change, correct, update or fix something in the data; \
+never propose a change just because you noticed something that looks wrong. Always state clearly \
+in your answer that the change is pending human approval, not yet applied."""
 
 
 class AgentAnswer(BaseModel):
@@ -102,7 +112,7 @@ def _fallback_answer(context: list[Citation]) -> str:
     )
 
 
-def _build_system_prompt(settings: Settings) -> str | SystemMessage:
+def _build_system_prompt(settings: Settings, enable_actions: bool = False) -> str | SystemMessage:
     """Prompt caching (`cache_control: {"type": "ephemeral"}`) is an Anthropic-specific
     mechanism -- OpenAI caches automatically with no API to opt in, and Ollama has no concept of
     it -- so only the Anthropic path gets a SystemMessage with a cache breakpoint; other
@@ -111,16 +121,15 @@ def _build_system_prompt(settings: Settings) -> str | SystemMessage:
     the whole of SYSTEM_PROMPT (the large, stable part) as a cached prefix. Tool-schema caching
     (the other half of this roadmap item) isn't implemented: DeepAgents builds its own built-in
     tool list internally and doesn't expose a hook to attach cache_control to it."""
+    text = SYSTEM_PROMPT + ACTIONS_ADDENDUM if enable_actions else SYSTEM_PROMPT
     if settings.llm_provider != "anthropic":
-        return SYSTEM_PROMPT
+        return text
     # langchain_anthropic's text-block formatter (_format_text_block) reads cache_control only
     # as a bare top-level key -- it does NOT fall back to TextContentBlock's typed `extras`
     # escape hatch for this particular block type (verified by inspecting the formatted output
     # directly; `extras` silently dropped cache_control instead of carrying it through). That
     # key isn't part of TextContentBlock's declared shape, hence the cast.
-    block = cast(
-        TextContentBlock, {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-    )
+    block = cast(TextContentBlock, {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}})
     return SystemMessage(content_blocks=[block])
 
 
@@ -151,11 +160,14 @@ def _build_model(settings: Settings) -> ChatAnthropic | ChatOpenAI | ChatOllama:
 
 
 class DeepAgentAnswerer:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, enable_actions: bool = False) -> None:
         self._model_name = settings.llm_model
         self._model = _build_model(settings)
         self._agent = create_deep_agent(
-            model=self._model, system_prompt=_build_system_prompt(settings), response_format=AgentAnswer
+            model=self._model,
+            tools=ACTION_TOOLS if enable_actions else [],
+            system_prompt=_build_system_prompt(settings, enable_actions),
+            response_format=AgentAnswer,
         )
 
     async def _estimate_cost_usd(self, prompt: str) -> float | None:
@@ -174,7 +186,13 @@ class DeepAgentAnswerer:
         worst_case = TokenUsage(input_tokens=input_tokens, output_tokens=MAX_OUTPUT_TOKENS)
         return cost_usd(self._model_name, worst_case)
 
-    async def answer(self, query: str, context: list[Citation], max_cost_usd: float | None = None) -> AnswerResult:
+    async def answer(
+        self,
+        query: str,
+        context: list[Citation],
+        max_cost_usd: float | None = None,
+        session_id: str = "unknown",
+    ) -> AnswerResult:
         prompt = f"Question: {query}\n\nContext:\n{_format_context(context)}"
         budget = ANSWER_BUDGET_USD if max_cost_usd is None else max_cost_usd
 
@@ -199,11 +217,24 @@ class DeepAgentAnswerer:
                 budget_rejected=True,
             )
 
+        # Ambient, per-call context for any action tool invoked during this agent run (see
+        # src/pipeline/answering/tools.py) -- a tool reads session_id from here rather than the
+        # model supplying it as an argument, and appends any proposal id it creates to the same
+        # list we read back below. Harmless when enable_actions=False: the tools simply aren't
+        # bound to the agent, so they're never called and the list stays empty.
+        session_token = current_session_id.set(session_id)
+        ids_token = proposed_ids.set([])
         try:
             result = await self._agent.ainvoke({"messages": [{"role": "user", "content": prompt}]})
         except Exception:
             log.exception("DeepAgents answerer call failed; falling back to a context-only summary")
-            return AnswerResult(text=_fallback_answer(context), model=self._model_name)
+            return AnswerResult(
+                text=_fallback_answer(context), model=self._model_name, proposed_action_ids=proposed_ids.get()
+            )
+        finally:
+            proposed = proposed_ids.get()
+            current_session_id.reset(session_token)
+            proposed_ids.reset(ids_token)
 
         usage = _sum_usage(result)
         cost = cost_usd(self._model_name, usage) if usage is not None else None
@@ -211,12 +242,22 @@ class DeepAgentAnswerer:
         structured = result.get("structured_response") if isinstance(result, dict) else None
         if isinstance(structured, AgentAnswer):
             log.info("agent answered confidence=%s citations=%s", structured.confidence, structured.citation_ids)
-            return AnswerResult(text=structured.answer, model=self._model_name, usage=usage, cost_usd=cost)
+            return AnswerResult(
+                text=structured.answer, model=self._model_name, usage=usage, cost_usd=cost, proposed_action_ids=proposed
+            )
 
         text = _last_plain_text_answer(result)
         if text:
             log.warning("structured_response missing; using the agent's final plain-text message instead")
-            return AnswerResult(text=text, model=self._model_name, usage=usage, cost_usd=cost)
+            return AnswerResult(
+                text=text, model=self._model_name, usage=usage, cost_usd=cost, proposed_action_ids=proposed
+            )
 
         log.error("DeepAgents answerer returned no usable output; falling back to a context-only summary")
-        return AnswerResult(text=_fallback_answer(context), model=self._model_name, usage=usage, cost_usd=cost)
+        return AnswerResult(
+            text=_fallback_answer(context),
+            model=self._model_name,
+            usage=usage,
+            cost_usd=cost,
+            proposed_action_ids=proposed,
+        )

@@ -11,10 +11,11 @@ from src.pipeline import Pipeline, build_pipeline
 
 
 @lru_cache
-def _pipeline_for(provider: LLMProvider | None, model: str | None) -> Pipeline:
-    # Cached per (provider, model) pair so picking a model in the UI doesn't rebuild the
-    # DeepAgents graph (and its model client) on every request -- retrievers/parser/masker are
-    # cheap to duplicate per pipeline, so there's no reuse-vs-rebuild tradeoff worth making here.
+def _pipeline_for(provider: LLMProvider | None, model: str | None, allow_actions: bool) -> Pipeline:
+    # Cached per (provider, model, allow_actions) triple so picking a model (or toggling
+    # actions) in the UI doesn't rebuild the DeepAgents graph (and its model client) on every
+    # request -- retrievers/parser/masker are cheap to duplicate per pipeline, so there's no
+    # reuse-vs-rebuild tradeoff worth making here.
     settings = get_settings()
     updates: dict[str, str] = {}
     if provider is not None:
@@ -23,14 +24,15 @@ def _pipeline_for(provider: LLMProvider | None, model: str | None) -> Pipeline:
         updates["llm_model"] = model
     if updates:
         settings = settings.model_copy(update=updates)
-    return build_pipeline(settings)
+    return build_pipeline(settings, allow_actions=allow_actions)
 
 
-def get_pipeline_for(provider: LLMProvider | None, model: str | None) -> Pipeline:
+def get_pipeline_for(provider: LLMProvider | None, model: str | None, allow_actions: bool = False) -> Pipeline:
     """Resolves the pipeline for a chat request, honoring a per-request model override
     (ChatRequest.llm_provider/llm_model) and falling back to the server's configured default
-    when neither is set."""
-    return _pipeline_for(provider, model)
+    when neither is set. `allow_actions` mirrors ChatRequest.allow_actions -- a pipeline built
+    with it False never has the write-capable tools bound, not just "instructed not to use them"."""
+    return _pipeline_for(provider, model, allow_actions)
 
 
 async def get_current_user_id(

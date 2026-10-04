@@ -43,15 +43,28 @@ class AnswerResult:
     usage: TokenUsage | None = None
     cost_usd: float | None = None
     budget_rejected: bool = False
+    # ids of any DataEditProposal rows the agent created this turn (see README's "Agent
+    # actions") -- always empty unless the answerer was built with enable_actions=True. Nothing
+    # in Milvus/Neo4j has changed yet; these are pending, surfaced so the UI can point the user
+    # at them for review.
+    proposed_action_ids: list[int] = field(default_factory=list)
 
 
 class Answerer(Protocol):
     async def answer(
-        self, query: str, context: list[Citation], max_cost_usd: float | None = None
+        self,
+        query: str,
+        context: list[Citation],
+        max_cost_usd: float | None = None,
+        session_id: str = "unknown",
     ) -> AnswerResult:
         """`max_cost_usd` overrides the stage's own default pre-flight budget
         (`pricing.ANSWER_BUDGET_USD`) for this one call; `None` means "use the default". Lets a
         caller that already knows this request must stay free (e.g. a session over its daily
         cap -- see src/api/routes/chat.py) force the existing budget-rejection fallback path by
-        passing `0.0`, rather than duplicating that fallback logic."""
+        passing `0.0`, rather than duplicating that fallback logic.
+
+        `session_id` is threaded through only so a real answerer with actions enabled can
+        attribute any proposal it creates to the right chat session (see
+        src/pipeline/answering/tools.py); StubAnswerer ignores it."""
         ...

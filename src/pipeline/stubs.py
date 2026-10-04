@@ -45,7 +45,13 @@ class StubGraphRetriever:
 class StubAnswerer:
     """Used when no ANTHROPIC_API_KEY is set; see pipeline.answering.agent.DeepAgentAnswerer."""
 
-    async def answer(self, query: str, context: list[Citation], max_cost_usd: float | None = None) -> AnswerResult:
+    async def answer(
+        self,
+        query: str,
+        context: list[Citation],
+        max_cost_usd: float | None = None,
+        session_id: str = "unknown",
+    ) -> AnswerResult:
         text = (
             f'[stub answer] You asked: "{query}". Found {len(context)} context items. '
             "Set ANTHROPIC_API_KEY to get a real, generated answer."

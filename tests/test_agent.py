@@ -272,6 +272,54 @@ def test_build_system_prompt_cache_control_reaches_the_wire_format() -> None:
     ]
 
 
+def test_build_system_prompt_includes_actions_addendum_only_when_enabled() -> None:
+    from src.pipeline.answering.agent import ACTIONS_ADDENDUM
+
+    settings = Settings(llm_provider="ollama")  # plain-string path, simplest to inspect
+
+    assert ACTIONS_ADDENDUM not in _build_system_prompt(settings, enable_actions=False)  # type: ignore[operator]
+    assert ACTIONS_ADDENDUM in _build_system_prompt(settings, enable_actions=True)  # type: ignore[operator]
+
+
+def test_deep_agent_answerer_binds_action_tools_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The safety property this whole feature depends on: with enable_actions=False (the
+    default), the write-capable tools are never even bound to the agent -- not just
+    "instructed not to use them". Intercepts create_deep_agent's own tools= kwarg rather than
+    trusting the system prompt text, since that's what actually controls what the model can
+    call."""
+    import src.pipeline.answering.agent as agent_module
+
+    captured: dict[str, object] = {}
+
+    def fake_create_deep_agent(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(agent_module, "create_deep_agent", fake_create_deep_agent)
+
+    DeepAgentAnswerer(Settings(llm_provider="ollama"), enable_actions=False)
+    assert captured["tools"] == []
+
+    DeepAgentAnswerer(Settings(llm_provider="ollama"), enable_actions=True)
+    assert captured["tools"] == agent_module.ACTION_TOOLS
+    assert len(agent_module.ACTION_TOOLS) == 2
+
+
+def test_factory_binds_action_tools_only_when_allow_actions_is_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.pipeline.answering.agent as agent_module
+
+    captured: list[object] = []
+    monkeypatch.setattr(
+        agent_module, "create_deep_agent", lambda **kwargs: captured.append(kwargs["tools"]) or object()
+    )
+
+    build_pipeline(Settings(llm_provider="ollama"), allow_actions=False)
+    build_pipeline(Settings(llm_provider="ollama"), allow_actions=True)
+
+    assert captured[0] == []
+    assert captured[1] == agent_module.ACTION_TOOLS
+
+
 def test_factory_falls_back_to_stub_for_openai_without_a_key() -> None:
     without_key = build_pipeline(Settings(llm_provider="openai", openai_api_key=""))
     with_key = build_pipeline(Settings(llm_provider="openai", openai_api_key="sk-fake-test-key"))

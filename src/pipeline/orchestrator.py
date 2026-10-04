@@ -105,7 +105,9 @@ class Pipeline:
                 )
                 context = merge_context(list(results))
                 answer_result = await timed_llm(
-                    "answer", "agentic RAG", self._answerer.answer(plan.query, context, max_answer_cost_usd)
+                    "answer",
+                    "agentic RAG",
+                    self._answerer.answer(plan.query, context, max_answer_cost_usd, req.session_id),
                 )
             except Exception:
                 root.update(metadata={"session_id": req.session_id, "outcome": "error"})
@@ -136,5 +138,9 @@ class Pipeline:
                 },
             )
             return ChatResponse(
-                answer=answer_result.text, citations=context, trace=trace, total_cost_usd=total_cost_usd
+                answer=answer_result.text,
+                citations=context,
+                trace=trace,
+                total_cost_usd=total_cost_usd,
+                proposed_action_ids=answer_result.proposed_action_ids,
             )
