@@ -9,11 +9,12 @@ synthesis fails.
 
 import asyncio
 import logging
-from typing import Literal
+from typing import Literal, cast
 
 from deepagents import create_deep_agent
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages.content import TextContentBlock
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr
@@ -101,6 +102,28 @@ def _fallback_answer(context: list[Citation]) -> str:
     )
 
 
+def _build_system_prompt(settings: Settings) -> str | SystemMessage:
+    """Prompt caching (`cache_control: {"type": "ephemeral"}`) is an Anthropic-specific
+    mechanism -- OpenAI caches automatically with no API to opt in, and Ollama has no concept of
+    it -- so only the Anthropic path gets a SystemMessage with a cache breakpoint; other
+    providers get the plain string. `create_deep_agent` preserves a SystemMessage's content
+    blocks and appends its own boilerplate as a further block, so the breakpoint still covers
+    the whole of SYSTEM_PROMPT (the large, stable part) as a cached prefix. Tool-schema caching
+    (the other half of this roadmap item) isn't implemented: DeepAgents builds its own built-in
+    tool list internally and doesn't expose a hook to attach cache_control to it."""
+    if settings.llm_provider != "anthropic":
+        return SYSTEM_PROMPT
+    # langchain_anthropic's text-block formatter (_format_text_block) reads cache_control only
+    # as a bare top-level key -- it does NOT fall back to TextContentBlock's typed `extras`
+    # escape hatch for this particular block type (verified by inspecting the formatted output
+    # directly; `extras` silently dropped cache_control instead of carrying it through). That
+    # key isn't part of TextContentBlock's declared shape, hence the cast.
+    block = cast(
+        TextContentBlock, {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+    )
+    return SystemMessage(content_blocks=[block])
+
+
 def _build_model(settings: Settings) -> ChatAnthropic | ChatOpenAI | ChatOllama:
     if settings.llm_provider == "openai":
         return ChatOpenAI(
@@ -131,7 +154,9 @@ class DeepAgentAnswerer:
     def __init__(self, settings: Settings) -> None:
         self._model_name = settings.llm_model
         self._model = _build_model(settings)
-        self._agent = create_deep_agent(model=self._model, system_prompt=SYSTEM_PROMPT, response_format=AgentAnswer)
+        self._agent = create_deep_agent(
+            model=self._model, system_prompt=_build_system_prompt(settings), response_format=AgentAnswer
+        )
 
     async def _estimate_cost_usd(self, prompt: str) -> float | None:
         """Pre-flight estimate before the real call: input tokens via the model's own

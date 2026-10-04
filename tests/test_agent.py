@@ -9,13 +9,19 @@ call to api.anthropic.com's count_tokens endpoint (see src/pipeline/answering/ag
 
 import pytest
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 
 from src.config import Settings
-from src.pipeline.answering.agent import AgentAnswer, DeepAgentAnswerer, _build_model
+from src.pipeline.answering.agent import (
+    SYSTEM_PROMPT,
+    AgentAnswer,
+    DeepAgentAnswerer,
+    _build_model,
+    _build_system_prompt,
+)
 from src.pipeline.factory import build_pipeline
 from src.pipeline.pricing import ANSWER_BUDGET_USD
 from src.schemas import Citation
@@ -201,6 +207,45 @@ def test_build_model_picks_backend_from_llm_provider(provider: str, expected_typ
         openai_api_key="sk-fake-test-key",
     )
     assert isinstance(_build_model(settings), expected_type)
+
+
+def test_build_system_prompt_adds_a_cache_breakpoint_for_anthropic() -> None:
+    settings = Settings(llm_provider="anthropic", anthropic_api_key="sk-ant-fake-test-key")
+
+    result = _build_system_prompt(settings)
+
+    assert isinstance(result, SystemMessage)
+    assert result.content == [
+        {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+def test_build_system_prompt_is_a_plain_string_for_non_anthropic_providers(provider: str) -> None:
+    # cache_control is an Anthropic-specific mechanism; OpenAI caches automatically with no API
+    # to opt in, and Ollama has no concept of it.
+    settings = Settings(llm_provider=provider, openai_api_key="sk-fake-test-key")  # type: ignore[arg-type]
+
+    assert _build_system_prompt(settings) == SYSTEM_PROMPT
+
+
+def test_build_system_prompt_cache_control_reaches_the_wire_format() -> None:
+    """Regression guard for a real bug caught while implementing this: TextContentBlock's typed
+    `extras` field looks like the "correct" place for a provider-specific key like cache_control,
+    but langchain_anthropic's text-block formatter only reads it from a bare top-level key --
+    `extras` is silently dropped for this block type. Assert against the actual formatted output
+    langchain_anthropic sends, not just our own message construction."""
+    from langchain_anthropic.chat_models import _format_messages
+
+    settings = Settings(llm_provider="anthropic", anthropic_api_key="sk-ant-fake-test-key")
+    system_message = _build_system_prompt(settings)
+    assert isinstance(system_message, SystemMessage)
+
+    formatted_system, _ = _format_messages([system_message, HumanMessage(content="hi")], model="claude-haiku-4-5")
+
+    assert formatted_system == [
+        {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+    ]
 
 
 def test_factory_falls_back_to_stub_for_openai_without_a_key() -> None:
