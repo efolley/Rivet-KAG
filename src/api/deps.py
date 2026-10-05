@@ -1,20 +1,61 @@
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Header, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import Settings, get_settings
+from src.auth import decode_user_id
+from src.config import LLMProvider, Settings, get_settings
+from src.db import get_session
 from src.pipeline import Pipeline, build_pipeline
 
 
 @lru_cache
-def _pipeline() -> Pipeline:
-    return build_pipeline(get_settings())
+def _pipeline_for(provider: LLMProvider | None, model: str | None, allow_actions: bool) -> Pipeline:
+    # Cached per (provider, model, allow_actions) triple so picking a model (or toggling
+    # actions) in the UI doesn't rebuild the DeepAgents graph (and its model client) on every
+    # request -- retrievers/parser/masker are cheap to duplicate per pipeline, so there's no
+    # reuse-vs-rebuild tradeoff worth making here.
+    settings = get_settings()
+    updates: dict[str, str] = {}
+    if provider is not None:
+        updates["llm_provider"] = provider
+    if model is not None:
+        updates["llm_model"] = model
+    if updates:
+        settings = settings.model_copy(update=updates)
+    return build_pipeline(settings, allow_actions=allow_actions)
 
 
-def get_pipeline() -> Pipeline:
-    return _pipeline()
+def get_pipeline_for(provider: LLMProvider | None, model: str | None, allow_actions: bool = False) -> Pipeline:
+    """Resolves the pipeline for a chat request, honoring a per-request model override
+    (ChatRequest.llm_provider/llm_model) and falling back to the server's configured default
+    when neither is set. `allow_actions` mirrors ChatRequest.allow_actions -- a pipeline built
+    with it False never has the write-capable tools bound, not just "instructed not to use them"."""
+    return _pipeline_for(provider, model, allow_actions)
+
+
+async def get_current_user_id(
+    settings: Annotated[Settings, Depends(get_settings)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> int | None:
+    """The authenticated user's id, or None for an anonymous request. Optional by design: chat
+    and uploads work with or without a token, so logged-in users just get their activity
+    attributed to their account instead of being anonymous.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1]
+    return decode_user_id(token, settings)
+
+
+async def require_current_user_id(user_id: Annotated[int | None, Depends(get_current_user_id)]) -> int:
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="A valid bearer token is required.")
+    return user_id
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
-PipelineDep = Annotated[Pipeline, Depends(get_pipeline)]
+DbSessionDep = Annotated[AsyncSession, Depends(get_session)]
+CurrentUserIdDep = Annotated[int | None, Depends(get_current_user_id)]
+RequiredUserIdDep = Annotated[int, Depends(require_current_user_id)]

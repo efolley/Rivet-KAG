@@ -8,7 +8,11 @@ retrieval to find anything, Milvus + Neo4j loaded via `make ingest`. This forces
 (USE_STUBS=false) regardless of the .env setting, since judging stub citations against real
 reference answers would be meaningless.
 
-Costs real money to run: one answering call plus one judging call per question.
+Costs real money to run: one answering call plus one judging call per question. Guarded by a
+BatchBudget (src/pipeline/pricing.py) -- BATCH_JOB_BUDGET_USD by default, or a shared tracker
+passed in by evals/release_gates.py, which treats its whole run (retrieval + judge + deepeval +
+latency measurement) as one job -- the breaker stops the run immediately once tripped, it
+doesn't finish the golden set and report over-budget afterward.
 
 Usage:
   make judge
@@ -22,11 +26,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, SecretStr
 
 from src.config import get_settings
 from src.pipeline.factory import build_pipeline
+from src.pipeline.pricing import BatchBudget, cost_usd, usage_from_ai_message
 from src.schemas import ChatRequest
 
 QUESTIONS_PATH = Path(__file__).parent / "golden_questions.json"
@@ -54,19 +59,58 @@ def build_judge(settings: Any) -> Any:
         timeout=20,
         stop=None,
     )
-    return llm.with_structured_output(JudgeVerdict)
+    # include_raw=True trades the plain JudgeVerdict return for {"raw", "parsed",
+    # "parsing_error"} -- "raw" is the underlying AIMessage, needed for cost accounting against
+    # the batch budget (see src/pipeline/parsing/router.py for the same pattern).
+    return llm.with_structured_output(JudgeVerdict, include_raw=True), settings.llm_model
 
 
-async def judge_answer(judge: Any, question: str, reference: str, actual: str) -> JudgeVerdict:
-    result = await judge.ainvoke(
+async def judge_answer(judge: Any, question: str, reference: str, actual: str) -> tuple[JudgeVerdict, float | None]:
+    runnable, model_name = judge
+    result = await runnable.ainvoke(
         [
             SystemMessage(JUDGE_SYSTEM_PROMPT),
             HumanMessage(f"Question: {question}\nReference answer: {reference}\nAssistant's answer: {actual}"),
         ]
     )
-    if not isinstance(result, JudgeVerdict):
+    if not isinstance(result, dict):
         raise TypeError(f"unexpected judge output type: {type(result)!r}")
-    return result
+    verdict = result.get("parsed")
+    if not isinstance(verdict, JudgeVerdict):
+        raise TypeError(f"unexpected judge output type: {type(verdict)!r}")
+
+    raw = result.get("raw")
+    cost = None
+    if isinstance(raw, AIMessage):
+        cost = cost_usd(model_name, usage_from_ai_message(raw))
+    return verdict, cost
+
+
+async def run_judge(settings: Any, budget: BatchBudget | None = None) -> list[tuple[str, JudgeVerdict]]:
+    """Runs the real pipeline + judge over every golden question with a reference_answer.
+    Returns (question, verdict) pairs -- the reusable core evals/release_gates.py calls
+    directly, separate from this module's own print-and-exit CLI below.
+
+    `budget` lets a caller (evals/release_gates.py) share one BatchBudget across several
+    scripts' worth of spend; a standalone run gets its own fresh one."""
+    budget = budget or BatchBudget()
+    questions = [q for q in json.loads(QUESTIONS_PATH.read_text()) if q.get("reference_answer")]
+    if not questions:
+        sys.exit("No golden questions have a reference_answer to judge.")
+
+    pipeline = build_pipeline(settings)
+    judge = build_judge(settings)
+
+    results = []
+    for q in questions:
+        budget.check()
+        response = await pipeline.run(ChatRequest(session_id="eval-judge", message=q["question"]))
+        budget.add(response.total_cost_usd)
+        verdict, judge_cost = await judge_answer(judge, q["question"], q["reference_answer"], response.answer)
+        budget.add(judge_cost)
+        results.append((q["question"], verdict))
+    budget.check()
+    return results
 
 
 async def main() -> int:
@@ -75,21 +119,12 @@ async def main() -> int:
         sys.exit("ANTHROPIC_API_KEY is required: the answerer and the judge both call Claude.")
     settings = settings.model_copy(update={"use_stubs": False})
 
-    questions = [q for q in json.loads(QUESTIONS_PATH.read_text()) if q.get("reference_answer")]
-    if not questions:
-        sys.exit("No golden questions have a reference_answer to judge.")
-
-    pipeline = build_pipeline(settings)
-    judge = build_judge(settings)
-
-    scores: list[int] = []
-    for q in questions:
-        response = await pipeline.run(ChatRequest(session_id="eval-judge", message=q["question"]))
-        verdict = await judge_answer(judge, q["question"], q["reference_answer"], response.answer)
-        scores.append(verdict.score)
+    results = await run_judge(settings)
+    for question, verdict in results:
         status = "PASS" if verdict.passed else "FAIL"
-        print(f"[{status}] {q['question']}\n       score={verdict.score} {verdict.rationale}")
+        print(f"[{status}] {question}\n       score={verdict.score} {verdict.rationale}")
 
+    scores = [verdict.score for _, verdict in results]
     passed = sum(1 for s in scores if s >= PASS_THRESHOLD)
     mean = sum(scores) / len(scores)
     print(f"\n{passed}/{len(scores)} passed, mean score {mean:.1f}/5")

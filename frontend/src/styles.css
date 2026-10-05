@@ -12,15 +12,25 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f5f6f8; color
 .pane[hidden] { display: none; }
 @media (max-width: 640px) { .app { flex-direction: column; } .sidebar { width: auto; flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid #e5e7eb; } .sidebar nav { flex-direction: row; } }
 .chat { padding-top: 16px; flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
+.model-picker { display: flex; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb; margin-bottom: 4px; }
+.model-picker label { display: flex; flex-direction: column; gap: 3px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; color: #6b7280; }
+.model-picker select { font: inherit; font-size: 0.85rem; padding: 5px 8px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; color: #1a1d21; text-transform: none; letter-spacing: normal; }
 .messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
-.empty { color: #9ca3af; text-align: center; margin-top: 30vh; }
+.empty { color: #9ca3af; text-align: center; margin-top: 25vh; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.suggestion { background: #fff; color: #374151; border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 16px; font: inherit; cursor: pointer; max-width: 440px; }
+.suggestion:hover { border-color: #2563eb; color: #2563eb; }
 .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; background: #fff; border: 1px solid #e5e7eb; }
 .msg p { margin: 0; white-space: pre-wrap; }
 .msg.user { align-self: flex-end; background: #2563eb; color: #fff; border-color: #2563eb; }
 .msg.error { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
-.citations { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
-.citations summary { cursor: pointer; }
-.citations details p { margin: 6px 0 4px 8px; color: #4b5563; }
+.section-title { margin: 0 0 4px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; }
+.msg .section-title:not(:first-child) { margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
+.citation-chips { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-ref { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
+.context-items { display: flex; flex-direction: column; gap: 10px; }
+.context-item { padding: 8px 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; }
+.context-content { margin: 0; color: #1a1d21; }
+.context-meta { margin: 6px 0 0; font-size: 0.75rem; color: #6b7280; }
 .badge { font-size: 0.7rem; padding: 1px 6px; border-radius: 6px; margin-right: 6px; color: #fff; }
 .badge.vector { background: #7c3aed; }
 .badge.graph { background: #059669; }

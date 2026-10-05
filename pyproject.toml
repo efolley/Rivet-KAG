@@ -16,21 +16,29 @@ dependencies = [
   "openpyxl>=3.1",
   "python-multipart>=0.0.9",
   "langchain-anthropic>=0.3",
+  "langchain-openai>=0.2",
+  "langchain-ollama>=0.2",
   "deepagents>=0.7",
+  "sqlalchemy[asyncio]>=2.0",
+  "asyncpg>=0.29",
+  "pyjwt>=2.9",
+  "passlib[argon2]>=1.7",
+  "redis>=5.0",
+  "aiokafka>=0.11",
+  "email-validator>=2.0",
+  "langfuse>=2.0",
 ]
 
 [dependency-groups]
 ingest = ["fastembed>=0.4"]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11", "aiosqlite>=0.20", "types-passlib>=1.7"]
+# Only needed for evals/deepeval_suite.py (make deepeval) -- not installed by default, since it's
+# a heavy dependency only used by a manual, credential-requiring batch script (same reasoning as
+# why evals/ scripts aren't part of CI -- see CLAUDE.md's development philosophy).
+eval = ["deepeval>=4.2.8"]
 
 [tool.uv]
 default-groups = ["dev", "ingest"]
-
-[project.optional-dependencies]
-# Enable as each integration lands:
-# rag = ["langchain", "deepagents", "langfuse"]
-# platform = ["sqlalchemy[asyncio]", "asyncpg", "alembic", "redis", "aiokafka", "pyjwt", "passlib[argon2]"]
-# eval = ["deepeval"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -53,9 +61,22 @@ strict = true
 files = ["src", "utils", "evals"]
 
 [[tool.mypy.overrides]]
-module = ["pymilvus.*", "fastembed.*", "milvus_lite.*", "llama_index.readers.file.*"]
+module = ["pymilvus.*", "fastembed.*", "milvus_lite.*", "llama_index.readers.file.*", "aiokafka.*"]
+ignore_missing_imports = true
+
+# deepeval is the opt-in `eval` uv group, not installed by default (see pyproject.toml's
+# addopts and evals/deepeval_suite.py) -- CI's `uv sync --frozen` won't have it, so mypy must
+# not fail just because it's absent.
+[[tool.mypy.overrides]]
+module = ["deepeval.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# deepeval (evals/deepeval_suite.py's dependency, the `eval` uv group, not installed by
+# default) registers a pytest plugin that calls load_dotenv() during pytest's plugin-loading
+# phase -- before conftest.py's own dotenv neutering ever runs (see tests/conftest.py and
+# CLAUDE.md's known gotchas). Force it off even if someone runs `uv run --group eval pytest`,
+# rather than relying solely on it being absent from the default environment.
+addopts = "-p no:deepeval"

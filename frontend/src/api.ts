@@ -1,10 +1,20 @@
-import type { ChatResponse, DataOverview, GraphData, VectorChunk } from "./types";
+import type { ChatResponse, DataOverview, GraphData, LLMProvider, ModelCatalog, VectorChunk } from "./types";
 
-export async function sendChat(sessionId: string, message: string): Promise<ChatResponse> {
+export async function sendChat(
+  sessionId: string,
+  message: string,
+  llmProvider?: LLMProvider,
+  llmModel?: string,
+): Promise<ChatResponse> {
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      llm_provider: llmProvider ?? null,
+      llm_model: llmModel ?? null,
+    }),
   });
   if (!res.ok) throw new Error(`Request failed (${res.status})`);
   return res.json();
@@ -15,6 +25,8 @@ async function getJson<T>(url: string): Promise<T> {
   if (!res.ok) throw new Error(`Request failed (${res.status})`);
   return res.json();
 }
+
+export const fetchModels = () => getJson<ModelCatalog>("/api/models");
 
 export const fetchOverview = () => getJson<DataOverview>("/api/data/overview");
 
