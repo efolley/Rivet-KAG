@@ -4,7 +4,7 @@
 
 > Details and verification notes live in [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Production readiness](#production-readiness); see the [Roadmap](#roadmap) to track work.
 
-![Demo: asking a question in the chat UI (stub mode, no services running) and browsing the Data Management tab against real Milvus/Neo4j data](docs/demo.gif)
+![Demo: asking a question in the chat UI, answered by real Milvus + Neo4j retrieval and a local Ollama model, then browsing the same data in the Data Management tab](docs/demo.gif)
 
 ## Run it yourself
 
@@ -415,7 +415,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 - [X] Release gates: quality/latency/cost/citation thresholds, manually enforceable in CI — `evals/gates.py` (pure, unit-tested) + `evals/release_gates.py` (`make gates`) + `.github/workflows/release-gates.yml` (`workflow_dispatch`, needs a real `ANTHROPIC_API_KEY` secret this repo doesn't have — see the workflow file). HITL thresholds are intentionally never enforced: no production traffic exists to sample from.
 - [X] Alerting on the conditions in [Observability and audit trail](#observability-and-audit-trail) — `evals/alerts.py` (pure, unit-tested) + `evals/check_alerts.py` (`make alerts`), reading real `chat_audit_log` rows. 4 of 6 conditions are genuinely computable today; 2 aren't (see below) — this is a manual/cron script, not a real alerting pipeline (no Prometheus/Alertmanager/paging integration exists in this project).
 - [X] Agent functionality for edit/update — propose-then-human-apply, opt-in per request (`allow_actions`) — see [Agent actions](#agent-actions)
-- [X] Demo GIF — `docs/demo.gif`, recorded against the real UI (stub-mode chat, Data Management against live Milvus/Neo4j)
+- [X] Demo GIF — `docs/demo.gif`, recorded against the real UI with real retrieval and a real (local Ollama) answerer, not stub mode
 
 ## License
 
