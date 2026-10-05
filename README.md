@@ -69,13 +69,13 @@ flowchart LR
 In the UI:
 
 - Q&A chat with cited answers (vector chunks and graph facts, with source text)
-- Data Management tab: browse everything stored in Milvus and Neo4j, and review/apply/reject proposed agent actions
+- Data Management tab: browse everything stored in Milvus and Neo4j
 - Per-request model picker (provider + model)
 
 API-only (no UI for these yet — use `/docs`, `curl`, or the `utils/` CLI):
 
 - JWT auth (`/api/auth/register`, `/login`, `/me`) — the UI doesn't have a login screen; chat/upload work logged-out too
-- Agent actions: the answerer can *propose* a data edit (vector chunk text, graph node property); nothing is written until a human reviews and applies it (`GET /api/actions`, `POST /api/actions/{id}/apply`/`reject`) — listing/reviewing is in the Data Management tab, but applying/rejecting is API-only today
+- Agent actions: the answerer can *propose* a data edit (vector chunk text, graph node property); nothing is written until a human reviews and applies it (`GET /api/actions`, `POST /api/actions/{id}/apply`/`reject`) — entirely API-only today, including listing; there's no Data Management UI for this yet
 - File upload ingestion (`POST /api/files`: Excel, CSV, Markdown, PDF, via LlamaIndex) and the `utils/` bulk-upload CLI
 - Per-stage cost accounting, pre-flight budget checks, and session/batch spend circuit breakers (`src/pipeline/pricing.py`) — visible in `ChatResponse.trace[]`/`total_cost_usd`, not rendered in the UI
 - Evals and release gates (`make eval`, `make judge`, `make deepeval`, `make gates`, `make alerts`) — see [Production readiness](#production-readiness)
@@ -241,7 +241,7 @@ The answerer can be given **write** capability — but only ever to *propose* a 
 
 **Scoping.** Graph property updates are restricted to `ALLOWED_GRAPH_LABELS` (`Employee`, `Team`, `Project`, `Tool`, `Document` — the labels that actually exist in `source_data/graph_data/*.csv`), checked before the label is interpolated into the Cypher string (labels can't be parameterized). Vector chunk updates re-embed the new text (`src/ingestion/embeddings.py`) and preserve the chunk's other fields (`source`, `doc_type`, `heading`, `chunk_index`) rather than overwriting them.
 
-`GET /api/actions` (optional `?status=pending|applied|rejected`) lists proposals for the Data Management UI to review. Verified live end to end against real Postgres, Milvus and Neo4j, and against a local Ollama model actually choosing to call the propose tool from a natural-language request and the subsequent apply call performing the real Milvus write.
+`GET /api/actions` (optional `?status=pending|applied|rejected`) lists proposals — entirely API-only today, there's no Data Management UI tab for this yet. Verified live end to end against real Postgres, Milvus and Neo4j, and against a local Ollama model actually choosing to call the propose tool from a natural-language request and the subsequent apply call performing the real Milvus write.
 
 ## Platform: auth, history and messaging
 

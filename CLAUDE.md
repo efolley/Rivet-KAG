@@ -44,9 +44,14 @@ test against the captured payload is the actual regression coverage, not the liv
   see the "Since the merge" note above and the "Stack and why" update below; don't trust this
   specific line over those.
 
-**Not started:** demo GIF and the "Agent actions" backlog item — everything else in Phase 4 is
-now done (see below). The "Production readiness" section of the README is a *design*, not code,
-for what's still missing — don't assume anything there is implemented without checking.
+**Not started, as of this writing (2026-10-04):** demo GIF and the "Agent actions" backlog item.
+**Both are done now** — see the "Since the merge" note above; this line is kept for its original
+context, not as current status. The "Production readiness" section of the README is a *design*,
+not code, for what's still missing — don't assume anything there is implemented without checking.
+**Known gap found 2026-10-05, not yet fixed**: the README's Agent actions UI claim was wrong
+(said the Data Management tab lists/reviews proposals; it doesn't — `GET /api/actions`'s listing
+has no UI at all, just like apply/reject). Fixed in the README itself; flagging here in case
+`frontend/src/components/DataManagement.tsx` is the next thing someone builds against this doc.
 
 **Done on `dev` (2026-10-04):**
 - **Prompt caching for the answerer's system prompt (Anthropic only)** —
