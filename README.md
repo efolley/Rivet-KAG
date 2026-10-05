@@ -1,6 +1,6 @@
 # Rivet KAG
 
-**Production-minded Hybrid KAG: a chat agent that answers from your own data, grounded in both a vector store (Milvus) and a knowledge graph (Neo4j), with citations for every claim, real eval gates, guardrails, and cost controls — not just a RAG demo.**
+**Hybrid KAG | A chat agent that answers from your own data, grounded in both a vector store (Milvus) and a knowledge graph (Neo4j), with citations for every claim, real eval gates, guardrails, and cost controls — not just a RAG demo.**
 
 > Details and verification notes live in [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Production readiness](#production-readiness); see the [Roadmap](#roadmap) to track work.
 
