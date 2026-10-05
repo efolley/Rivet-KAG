@@ -3,13 +3,18 @@
 Guidance for whoever (human or agent) develops in this repo next. `README.md` is for people using
 or evaluating Rivet KAG; this file is for people changing it.
 
-## Current progress (as of 2026-10-04)
+## Current progress (as of 2026-10-05)
 
-**Branch:** work is on `dev`, branched off `feat/phase_3` and pushed to `origin/dev`. Three
-branches are now in flight — `main` (`80932a0`), `feat/phase_3` (unmerged, pushed), `dev`
-(unmerged, pushed, branched from `feat/phase_3`) — none merged into another yet. Decide how to
-reconcile this chain (PRs, squash, etc.) before starting new work, rather than stacking further
-commits by default.
+**Branches:** `feat/phase_3` and `dev` have both been merged into `main` via PR. `main` is now
+the up-to-date branch; the section below (dated 2026-10-04) predates that merge and is kept for
+its narrative/verification detail, not as a description of current branch state.
+
+**Since the merge (2026-10-05):** a README onboarding pass (a 5-minute zero-services quickstart,
+a demo GIF at `docs/demo.gif`, API-only vs. UI-visible feature labeling, and a "Scope vs. a full
+agent platform" section contrasting this project's single-agent design against a fuller
+multi-agent/MCP/VLM architecture) and **Docker packaging** (`Dockerfile`, `frontend/Dockerfile`,
+`docker-compose.yml` — see README's "Docker" section and the "Stack and why" update below). Both
+landed directly on `main`.
 
 **Done, in order** (each phase's README roadmap checkboxes are the source of truth — grep
 `^## Roadmap` there for the exact state):
@@ -21,9 +26,11 @@ commits by default.
   done on top of it). `src/pipeline/merge.py` now dedupes by id, ranks by retriever score
   (unscored last), and greedily trims to a token budget (default 2,000, cheap char-based estimate)
   — no summarization step, verbatim-or-dropped.
-- Phase 3 (Platform: JWT auth, Postgres, Redis cache, Kafka events) — **on `feat/phase_3`,
-  unmerged**. See the README's "Platform: auth, history and messaging" section for what's real.
-  Docker packaging stays explicitly postponed (not a gap to fill).
+- Phase 3 (Platform: JWT auth, Postgres, Redis cache, Kafka events) — now on `main` (see the
+  branch note above). See the README's "Platform: auth, history and messaging" section for what's
+  real. Docker packaging was postponed as of this writing (2026-10-04) but has since been added —
+  see the "Since the merge" note above and the "Stack and why" update below; don't trust this
+  specific line over those.
 
 **Not started:** demo GIF and the "Agent actions" backlog item — everything else in Phase 4 is
 now done (see below). The "Production readiness" section of the README is a *design*, not code,
@@ -223,9 +230,18 @@ polished demo.** Concretely:
 
 ## Stack and why
 
-- **uv-only, no Docker.** All Python dependency management, venvs and running go through `uv`
-  (`uv sync`, `uv run ...`). Docker was deliberately removed earlier in this project's history —
-  don't reintroduce it unless asked.
+- **uv for Python; Docker is an optional alternative, not the default.** All Python dependency
+  management, venvs and routine `make dev`/`make up` running go through `uv` (`uv sync`,
+  `uv run ...`) and brew-managed services — this stays the primary workflow (faster rebuilds, no
+  container overhead for day-to-day iteration). Docker was deliberately removed early in this
+  project's history, then explicitly reintroduced on 2026-10-05 as a packaged alternative for
+  anyone who'd rather not install four Homebrew services directly (`Dockerfile`,
+  `frontend/Dockerfile`, `docker-compose.yml`, `make docker-up`/`docker-down`/`docker-ingest` —
+  see the README's "Docker" section). Live-verified: built both images, brought up all six
+  containers, confirmed `/api/chat` and `/api/data/overview` work against real containerized
+  Neo4j/Postgres/Redis/Kafka and the bind-mounted Milvus Lite file. Keep both paths working when
+  touching `Settings`/env vars — the compose file sets the same settings by service name
+  (`postgres`, `redis`, `kafka`, `neo4j`) instead of `localhost`.
 - **Milvus runs embedded** (Milvus Lite: a local file at `data/milvus.db`), not a server — nothing
   to install for it. It locks its file to one process; `src/clients/milvus.py`'s `milvus_session()`
   context manager opens and *fully releases* it (closes the client, then calls
@@ -296,6 +312,9 @@ make judge       # live LLM-as-a-judge run — needs ANTHROPIC_API_KEY, costs re
 make deepeval    # live DeepEval (GEval + FaithfulnessMetric) run — needs `uv sync --group eval`
 make gates       # live release-gate check (retrieval + judge + deepeval + latency/cost) — needs eval group
 make alerts      # live chat_audit_log alert-condition check — needs a running Postgres
+make docker-up      # alternative to platform+dev: builds and starts the whole stack in containers
+make docker-ingest  # like `make ingest`, but inside the api container
+make docker-down    # stops the docker-compose stack
 ```
 
 ## Conventions

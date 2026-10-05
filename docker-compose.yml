@@ -1,0 +1,122 @@
+# Optional: the whole stack (API, UI, Neo4j, Postgres, Redis, Kafka) in containers, for anyone
+# who'd rather not install four Homebrew services. Local dev still defaults to `make up` (uv +
+# brew services) -- see CLAUDE.md's "Stack and why" and the README's "Docker" section for when
+# to reach for each. Milvus stays embedded (Milvus Lite, a local file) even here: it has no
+# server image to containerize, so the api container just gets the repo's ./data mounted in.
+services:
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/rivet-dev-password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: rivet
+      POSTGRES_PASSWORD: rivet
+      POSTGRES_DB: rivet
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rivet"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # KRaft mode (no Zookeeper) -- same topology as the brew-services Kafka 4.x path in
+  # CLAUDE.md, just containerized. The official apache/kafka image does the KRaft storage
+  # format on first boot itself (via KAFKA_* env vars its entrypoint script reads), which is
+  # why there's no separate init step here. (bitnami/kafka was tried first and dropped: Broadcom
+  # pulled it from Docker Hub's free tier in 2025, so the tag no longer resolves.)
+  kafka:
+    image: apache/kafka:4.2.1
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # USE_STUBS=false by default here: all four platform services and Neo4j/Postgres are
+      # already up in this compose file, so there's no reason to fall back to canned retrieval
+      # the way the no-services quickstart does -- run `make docker-ingest` once before asking
+      # a real question, or vector/graph retrieval will just come back empty (not an error).
+      USE_STUBS: "false"
+      DATABASE_URL: postgresql+asyncpg://rivet:rivet@postgres:5432/rivet
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: rivet-dev-password
+      RIVET_MILVUS_URI: /app/data/milvus.db
+      CORS_ORIGINS: '["http://localhost:5173"]'
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # host.docker.internal resolves to the host from inside the container (Docker Desktop);
+      # only matters if LLM_PROVIDER=ollama and Ollama is running on the host, not in compose.
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+    volumes:
+      # Milvus Lite's file -- same ./data/milvus.db path make ingest/make dev use outside
+      # Docker, so data persists across `docker compose down`/`up` and is inspectable either way.
+      - ./data:/app/data
+      - ./source_data:/app/source_data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  neo4j_data:
+  postgres_data:

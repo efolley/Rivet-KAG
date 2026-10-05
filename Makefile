@@ -1,4 +1,4 @@
-.PHONY: neo4j postgres redis kafka platform wait-platform up ingest eval judge deepeval gates alerts dev dev-backend dev-frontend install lint test
+.PHONY: neo4j postgres redis kafka platform wait-platform up ingest eval judge deepeval gates alerts dev dev-backend dev-frontend install lint test docker-up docker-down docker-ingest docker-logs
 
 neo4j:
 	brew services start neo4j
@@ -72,3 +72,18 @@ lint:
 
 test:
 	uv run pytest
+
+# Containerized alternative to `make up` -- see docker-compose.yml and the README's "Docker"
+# section. `docker-up` builds and starts everything (API, UI, Neo4j, Postgres, Redis, Kafka);
+# run `make docker-ingest` once afterward to load source_data/ before asking real questions.
+docker-up:
+	docker compose up --build
+
+docker-down:
+	docker compose down
+
+docker-ingest:
+	docker compose exec api uv run python -m utils.upload all
+
+docker-logs:
+	docker compose logs -f

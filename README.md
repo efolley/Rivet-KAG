@@ -25,40 +25,10 @@ curl -X POST http://localhost:8000/api/chat \
   -d '{"session_id": "demo", "message": "What is the expense policy?"}'
 ```
 
-You'll get back a real `{answer, citations[], trace[]}` shape with canned citations and a canned
-answer — no Milvus, Neo4j, Postgres, Redis, Kafka, or LLM credentials needed; `make test` runs the
-same way. This is genuinely how far you can get with zero infrastructure, not a watered-down demo
-of a different code path — swapping in real retrieval and a real LLM later (see
-[Use real retrieval and LLMs](#use-real-retrieval-and-llms)) exercises the exact same routes.
+You'll get back a real `{answer, citations[], trace[]}` shape with canned citations and a canned answer — no Milvus, Neo4j, Postgres, Redis, Kafka, or LLM credentials needed; `make test` runs the same way. This is genuinely how far you can get with zero infrastructure, not a watered-down demo of a different code path — swapping in real retrieval and a real LLM later (see [Use real retrieval and LLMs](#use-real-retrieval-and-llms)) exercises the exact same routes.
 
 See [Scope vs. a full agent platform](#scope-vs-a-full-agent-platform) for how this maps onto a
-fuller production agent architecture (multi-agent orchestration, MCP tools, VLMs) and what
-plugging those in would look like.
-
-## Features
-
-In the UI:
-
-- Q&A chat with cited answers (vector chunks and graph facts, with source text)
-- Data Management tab: browse everything stored in Milvus and Neo4j, and review/apply/reject proposed agent actions
-- Per-request model picker (provider + model)
-
-API-only (no UI for these yet — use `/docs`, `curl`, or the `utils/` CLI):
-
-- JWT auth (`/api/auth/register`, `/login`, `/me`) — the UI doesn't have a login screen; chat/upload work logged-out too
-- Agent actions: the answerer can *propose* a data edit (vector chunk text, graph node property); nothing is written until a human reviews and applies it (`GET /api/actions`, `POST /api/actions/{id}/apply`/`reject`) — listing/reviewing is in the Data Management tab, but applying/rejecting is API-only today
-- File upload ingestion (`POST /api/files`: Excel, CSV, Markdown, PDF, via LlamaIndex) and the `utils/` bulk-upload CLI
-- Per-stage cost accounting, pre-flight budget checks, and session/batch spend circuit breakers (`src/pipeline/pricing.py`) — visible in `ChatResponse.trace[]`/`total_cost_usd`, not rendered in the UI
-- Evals and release gates (`make eval`, `make judge`, `make deepeval`, `make gates`, `make alerts`) — see [Production readiness](#production-readiness)
-- Local-only Langfuse tracing (never Langfuse Cloud)
-
-Underlying design (not user-facing, but worth knowing about):
-
-- Hybrid retrieval: semantic search (Milvus) and Cypher queries (Neo4j) run in parallel
-- Input guardrails and regex-based PII masking, always on, before anything reaches an LLM
-- Agentic RAG (DeepAgents) with Pydantic-validated structured output
-- Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
-- Planned: analysis/plotting agent actions and the richer trace field set — see [Production readiness](#production-readiness)
+fuller production agent architecture (multi-agent orchestration, MCP tools, VLMs) and what plugging those in would look like.
 
 ## Architecture
 
@@ -93,6 +63,31 @@ flowchart LR
 7. The context goes to the agentic RAG layer (DeepAgents), grounded strictly in the retrieved citations
 8. The answer is produced as a validated Pydantic structure (`AgentAnswer`: answer, citations used, confidence)
 9. The UI shows the answer with citations and source text
+
+## Features
+
+In the UI:
+
+- Q&A chat with cited answers (vector chunks and graph facts, with source text)
+- Data Management tab: browse everything stored in Milvus and Neo4j, and review/apply/reject proposed agent actions
+- Per-request model picker (provider + model)
+
+API-only (no UI for these yet — use `/docs`, `curl`, or the `utils/` CLI):
+
+- JWT auth (`/api/auth/register`, `/login`, `/me`) — the UI doesn't have a login screen; chat/upload work logged-out too
+- Agent actions: the answerer can *propose* a data edit (vector chunk text, graph node property); nothing is written until a human reviews and applies it (`GET /api/actions`, `POST /api/actions/{id}/apply`/`reject`) — listing/reviewing is in the Data Management tab, but applying/rejecting is API-only today
+- File upload ingestion (`POST /api/files`: Excel, CSV, Markdown, PDF, via LlamaIndex) and the `utils/` bulk-upload CLI
+- Per-stage cost accounting, pre-flight budget checks, and session/batch spend circuit breakers (`src/pipeline/pricing.py`) — visible in `ChatResponse.trace[]`/`total_cost_usd`, not rendered in the UI
+- Evals and release gates (`make eval`, `make judge`, `make deepeval`, `make gates`, `make alerts`) — see [Production readiness](#production-readiness)
+- Local-only Langfuse tracing (never Langfuse Cloud)
+
+Underlying design (not user-facing, but worth knowing about):
+
+- Hybrid retrieval: semantic search (Milvus) and Cypher queries (Neo4j) run in parallel
+- Input guardrails and regex-based PII masking, always on, before anything reaches an LLM
+- Agentic RAG (DeepAgents) with Pydantic-validated structured output
+- Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
+- Planned: analysis/plotting agent actions and the richer trace field set — see [Production readiness](#production-readiness)
 
 ### Tech stack
 
@@ -140,8 +135,11 @@ it in if needed:
 
 Everything in [Run it in 5 minutes](#run-it-in-5-minutes-no-services-required) used stubs. This
 section swaps in real Milvus/Neo4j retrieval and a real LLM — same routes, same UI, just backed
-by real infrastructure instead of canned responses. No Docker: you need [uv](https://docs.astral.sh/uv/)
-(installs Python 3.12 itself), Node 18+, and [Neo4j](https://neo4j.com/), [PostgreSQL](https://www.postgresql.org/), [Redis](https://redis.io/) and [Kafka](https://kafka.apache.org/) installed locally — all via Homebrew, all run as background services, the same pattern throughout this project. Milvus runs embedded (Milvus Lite) from a local file, so there is nothing to install for it.
+by real infrastructure instead of canned responses. Two ways to get there: Homebrew services
+(this project's default for routine local dev) or Docker (see
+[Docker](#docker) below) if you'd rather not install four services directly.
+
+You need [uv](https://docs.astral.sh/uv/) (installs Python 3.12 itself), Node 18+, and [Neo4j](https://neo4j.com/), [PostgreSQL](https://www.postgresql.org/), [Redis](https://redis.io/) and [Kafka](https://kafka.apache.org/) installed locally — all via Homebrew, all run as background services. Milvus runs embedded (Milvus Lite) from a local file, so there is nothing to install for it.
 
 ```bash
 brew install neo4j postgresql@16 redis kafka         # once; neo4j and kafka need a JDK, Homebrew pulls one in
@@ -155,7 +153,21 @@ make dev                                             # API http://localhost:8000
 
 Connection settings live in `.env` (copy `.env.example`); the defaults match the commands above. Postgres tables are created automatically on startup (`Base.metadata.create_all`, not a migration tool — see `src/db/models.py`). `make test lint` runs the checks; the test suite never touches any of these services — see [Platform](#platform-auth-history-and-messaging).
 
-After the one-time setup above, `make up` is a single command for routine local dev: it starts the four brew services if they aren't already running, polls their ports until each actually accepts a connection (not just until `brew services start` returns — Postgres/Neo4j/Kafka can take a few seconds to come up from cold), then runs `make dev`. This is deliberately not Docker — see `CLAUDE.md`'s "Stack and why" for why Docker was dropped from this project and isn't coming back for routine dev.
+After the one-time setup above, `make up` is a single command for routine local dev: it starts the four brew services if they aren't already running, polls their ports until each actually accepts a connection (not just until `brew services start` returns — Postgres/Neo4j/Kafka can take a few seconds to come up from cold), then runs `make dev`. This stays the default for day-to-day development (faster rebuilds, no container overhead) — see `CLAUDE.md`'s "Stack and why" for the original reasoning; Docker is available as an alternative, not a replacement.
+
+### Docker
+
+`docker-compose.yml` packages the whole stack — API, UI, Neo4j, Postgres, Redis, Kafka — for anyone who'd rather not install four services directly (a quick demo on a machine without Homebrew, for instance). Milvus still runs embedded even here: there's no Milvus server image, so the `api` container just gets the repo's `./data` directory bind-mounted, same `data/milvus.db` file either way.
+
+```bash
+cp .env.example .env          # optional: only needed to set ANTHROPIC_API_KEY/etc for a real LLM
+make docker-up                 # builds and starts everything: API :8000, UI :5173
+make docker-ingest              # once, after the containers are healthy: loads source_data/
+```
+
+`make docker-down` stops everything; `make docker-logs` tails all container logs. The `api` container talks to the other containers by their compose service name (`postgres`, `redis`, `kafka`, `neo4j`), not `localhost` — see `docker-compose.yml`'s `environment:` block. `USE_STUBS=false` by default here (all four services are already up), so real retrieval runs out of the box; `make docker-ingest` just needs to run once first, or vector/graph retrieval comes back empty rather than erroring. An `LLM_PROVIDER=ollama` setup needs Ollama running on the *host*, not in this compose file — `OLLAMA_HOST` defaults to `http://host.docker.internal:11434` to reach it.
+
+Verified live: built both images, brought up all six containers (Neo4j/Postgres/Redis/Kafka all pass their healthchecks), and confirmed `/api/chat` end to end — real vector retrieval against the bind-mounted Milvus Lite file (the same data a Homebrew-based `make ingest` had already loaded), `/api/data/overview` showing real Milvus/Neo4j data through the frontend's nginx `/api` proxy, and the answerer/Kafka-publish stages degrading gracefully exactly as they do outside Docker (no Ollama running on the host in that test, and Kafka's topic auto-create racing the first publish — both logged and swallowed, the request still returned 200). The Anthropic/OpenAI LLM-backed happy path itself is unverified here for the same reason as everywhere else in this README (no funded key available).
 
 API: `POST /api/chat` with `{"session_id": "...", "message": "..."}` returns `{answer, citations[], trace[]}`. `/api/data/*` feeds the Data Management tab. `POST /api/files` ingests an uploaded file (see [Uploading files](#uploading-files)). `/api/auth/register`, `/login` and `/me` handle JWT auth (see [Platform](#platform-auth-history-and-messaging)).
 
@@ -392,7 +404,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 - [X] User auth
 - [X] PostgreSQL for users, chat history, ingestion progress and the audit trail (`chat_audit_log`)
 - [X] Kafka (async messaging) and Redis (cache) — see [Platform](#platform-auth-history-and-messaging) for scope (an event publisher and a response cache, not a separate gateway service)
-- [ ] Docker packaging of the full stack (postponed)
+- [X] Docker packaging of the full stack — `docker-compose.yml` + `Dockerfile`s, an alternative to the Homebrew-services path, not a replacement for it — see [Docker](#docker)
 
 **Phase 4: Quality and polish** — see [Production readiness](#production-readiness) for the full design
 
