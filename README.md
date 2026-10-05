@@ -1,8 +1,8 @@
-# Rivet KAG | Agent that talks to your vector and graph data
+# Rivet KAG
 
-**Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
+**Production-minded Hybrid KAG: a chat agent that answers from your own data, grounded in both a vector store (Milvus) and a knowledge graph (Neo4j), with citations for every claim, real eval gates, guardrails, and cost controls — not just a RAG demo.**
 
-> Details and verification notes live in [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Production readiness](#production-readiness); See the [Roadmap](#roadmap) to track work.
+> Details and verification notes live in [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Production readiness](#production-readiness); see the [Roadmap](#roadmap) to track work.
 
 ![Demo: asking a question in the chat UI (stub mode, no services running) and browsing the Data Management tab against real Milvus/Neo4j data](docs/demo.gif)
 
