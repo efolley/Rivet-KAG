@@ -8,6 +8,7 @@ synthesis fails.
 """
 
 import asyncio
+import json
 import logging
 from typing import Literal, cast
 
@@ -63,6 +64,34 @@ def _format_context(context: list[Citation]) -> str:
     return "\n\n".join(f"[{c.id}] ({c.source_type}) {c.title}\n{c.snippet}" for c in context)
 
 
+def _extract_answer_from_tool_call_text(content: str) -> str | None:
+    """Some models (small local Ollama models especially) print the `AgentAnswer` tool call
+    as plain text instead of actually invoking it -- e.g. `{"name": "AgentAnswer",
+    "arguments": {"answer": "...", ...}}`. Recover the real `answer` field from that JSON
+    rather than show the raw blob to the user (this was a real bug, caught live: the chat UI
+    displayed the literal JSON as the answer). Returns None for text that isn't
+    AgentAnswer-tool-call-shaped JSON -- the caller treats that as "not recoverable" rather
+    than falling through to showing it verbatim, since anything that parses as an object but
+    doesn't match is far more likely to be a malformed tool call than a genuine prose answer."""
+    if not (content.startswith("{") and content.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    arguments = parsed.get("arguments")
+    if isinstance(arguments, dict):
+        nested_answer = arguments.get("answer")
+        if isinstance(nested_answer, str):
+            return nested_answer
+    top_level_answer = parsed.get("answer")
+    if isinstance(top_level_answer, str):
+        return top_level_answer
+    return None
+
+
 def _last_plain_text_answer(result: object) -> str | None:
     """Some models (small local Ollama models especially) don't reliably emit the tool call
     DeepAgents needs to populate `structured_response`, even though they do produce a good
@@ -74,7 +103,16 @@ def _last_plain_text_answer(result: object) -> str | None:
         return None
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and isinstance(msg.content, str) and msg.content.strip():
-            return msg.content.strip()
+            content = msg.content.strip()
+            recovered = _extract_answer_from_tool_call_text(content)
+            if recovered is not None:
+                return recovered
+            if content.startswith("{"):
+                # Looks like a tool-call attempt that didn't match the expected shape -- not
+                # recoverable, and definitely not something to show the user verbatim (see
+                # _extract_answer_from_tool_call_text). Let the caller fall back instead.
+                return None
+            return content
     return None
 
 

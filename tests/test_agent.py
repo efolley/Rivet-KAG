@@ -139,6 +139,53 @@ async def test_agent_uses_final_plain_text_message_when_structured_response_is_m
     assert result.text == "The meal expense limit while travelling is 60 EUR per day."
 
 
+async def test_agent_extracts_answer_from_a_tool_call_printed_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real bug, caught live while recording the README demo GIF against a local Ollama model
+    (qwen2.5:14b): when structured_response isn't filled, the model's final message can itself
+    be the AgentAnswer tool call's JSON shape, printed as plain text instead of actually
+    invoked. The old fallback showed that raw JSON directly in the chat UI as the "answer" --
+    this is the literal payload observed then, used here as the regression fixture."""
+    raw_tool_call_text = (
+        '{\n  "name": "AgentAnswer",\n  "arguments": {\n'
+        '    "answer": "The given context does not contain information about meal expense '
+        'limits while traveling.",\n    "citation_ids": [],\n    "confidence": "high"\n  }\n}'
+    )
+    agent_result = {
+        "structured_response": None,
+        "messages": [
+            HumanMessage(content="Question: What is the meal limit?"),
+            _ai_message(raw_tool_call_text),
+        ],
+    }
+    answerer = _answerer(monkeypatch, agent_result)
+
+    result = await answerer.answer("What is the meal limit?", CONTEXT)
+
+    assert result.text == "The given context does not contain information about meal expense limits while traveling."
+    assert "arguments" not in result.text
+    assert "{" not in result.text
+
+
+async def test_agent_falls_back_when_tool_call_text_is_unparseable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A JSON-shaped final message that doesn't match AgentAnswer's shape (truncated, wrong
+    keys, model-specific quirks) still isn't a natural-language answer -- it must not be shown
+    to the user verbatim either, so this should land on the same safe fallback as a hard
+    failure, not leak whatever the malformed JSON happens to contain."""
+    agent_result = {
+        "structured_response": None,
+        "messages": [
+            HumanMessage(content="Question: What is the meal limit?"),
+            _ai_message('{"name": "AgentAnswer", "arguments": {"citation_ids": []}}'),
+        ],
+    }
+    answerer = _answerer(monkeypatch, agent_result)
+
+    result = await answerer.answer("What is the meal limit?", CONTEXT)
+
+    assert "couldn't generate a complete answer" in result.text
+    assert "arguments" not in result.text
+
+
 async def test_agent_computes_cost_from_summed_message_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     decision = AgentAnswer(answer="x", citation_ids=[], confidence="high")
     # DeepAgents can round-trip the model more than once (tool calls); cost should sum both.

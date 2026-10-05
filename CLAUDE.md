@@ -12,9 +12,21 @@ its narrative/verification detail, not as a description of current branch state.
 **Since the merge (2026-10-05):** a README onboarding pass (a 5-minute zero-services quickstart,
 a demo GIF at `docs/demo.gif`, API-only vs. UI-visible feature labeling, and a "Scope vs. a full
 agent platform" section contrasting this project's single-agent design against a fuller
-multi-agent/MCP/VLM architecture) and **Docker packaging** (`Dockerfile`, `frontend/Dockerfile`,
-`docker-compose.yml` — see README's "Docker" section and the "Stack and why" update below). Both
-landed directly on `main`.
+multi-agent/MCP/VLM architecture), **Docker packaging** (`Dockerfile`, `frontend/Dockerfile`,
+`docker-compose.yml` — see README's "Docker" section and the "Stack and why" update below), and a
+**bug fix**: `DeepAgentAnswerer` could leak a raw `AgentAnswer` tool-call JSON blob straight into
+the chat UI as the "answer" — caught live while recording the demo GIF against a local Ollama
+model (`qwen2.5:14b`), which sometimes prints its tool call as plain text instead of invoking it,
+and the old fallback (`_last_plain_text_answer`) took that plain text at face value. Fixed in
+`src/pipeline/answering/agent.py`: a new `_extract_answer_from_tool_call_text` recovers the real
+`answer` field when the "plain text" turns out to be that JSON shape, and anything JSON-shaped
+that doesn't match is treated as unrecoverable (falls through to the existing generic fallback)
+rather than ever shown to the user verbatim. Regression-tested in `tests/test_agent.py` against
+the exact payload captured from the live failure, plus a malformed-JSON case. Live-reverified
+afterward against the real local model that originally produced the bug: several real questions
+all answered cleanly through the normal `structured_response` path (the model didn't hit its own
+failure mode again this session, so the recovery path itself wasn't re-exercised live) — the unit
+test against the captured payload is the actual regression coverage, not the live rerun.
 
 **Done, in order** (each phase's README roadmap checkboxes are the source of truth — grep
 `^## Roadmap` there for the exact state):
