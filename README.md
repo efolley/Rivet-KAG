@@ -2,25 +2,62 @@
 
 **Knowledge-Augmented Generation (KAG) over your own data.** Ask questions in natural language and get answers grounded in both a **vector store (Milvus)** and a **knowledge graph (Neo4j)**, with citations and source text for every claim.
 
-> Status: early stage. The chat UI, API contract, sample data, upload tooling, a Data Management view, real Milvus/Neo4j retrieval, an LLM request router, a DeepAgents answerer with Pydantic-validated output (with a provider picker: Anthropic/OpenAI/local Ollama), opt-in propose-then-human-apply agent actions, per-stage cost accounting with a pre-flight budget check, session- and batch-job-level spend circuit breakers, prompt caching, regex-based PII masking, JWT auth, Postgres-backed chat history/audit log/ingestion jobs, a Redis response cache, Kafka event publishing, local-only Langfuse tracing, a 30-question DeepEval suite (`GEval` + `FaithfulnessMetric`), release gates and an alerting check all work — the LLM pieces behind `ANTHROPIC_API_KEY` or the selected provider's credentials — with a 30/30 live retrieval-accuracy pass (see [Real retrieval, routing and answering](#real-retrieval-routing-and-answering), [Agent actions](#agent-actions) and [Platform: auth, history and messaging](#platform-auth-history-and-messaging)). The richer trace field set is still a design, not code — see [Production readiness](#production-readiness).
+> Details and verification notes live in [Real retrieval, routing and answering](#real-retrieval-routing-and-answering) and [Production readiness](#production-readiness); See the [Roadmap](#roadmap) to track work.
 
-<!-- TODO: demo GIF -->
+![Demo: asking a question in the chat UI (stub mode, no services running) and browsing the Data Management tab against real Milvus/Neo4j data](docs/demo.gif)
+
+## Run it yourself
+
+The chat pipeline has a **stub mode** that needs no database, no API key and no background service — this is also what `.env.example` and CI default to. Use this to see the UI and API shape before installing anything else:
+
+```bash
+git clone <this repo> && cd rivet_kag
+cp .env.example .env     # defaults: USE_STUBS=true, no API key -- nothing below needs it
+make install              # uv sync + npm install
+make dev                  # API http://localhost:8000 (docs at /docs), UI http://localhost:5173
+```
+
+Open the UI and ask anything, or hit the API directly:
+
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id": "demo", "message": "What is the expense policy?"}'
+```
+
+You'll get back a real `{answer, citations[], trace[]}` shape with canned citations and a canned
+answer — no Milvus, Neo4j, Postgres, Redis, Kafka, or LLM credentials needed; `make test` runs the
+same way. This is genuinely how far you can get with zero infrastructure, not a watered-down demo
+of a different code path — swapping in real retrieval and a real LLM later (see
+[Use real retrieval and LLMs](#use-real-retrieval-and-llms)) exercises the exact same routes.
+
+See [Scope vs. a full agent platform](#scope-vs-a-full-agent-platform) for how this maps onto a
+fuller production agent architecture (multi-agent orchestration, MCP tools, VLMs) and what
+plugging those in would look like.
 
 ## Features
 
+In the UI:
+
 - Q&A chat with cited answers (vector chunks and graph facts, with source text)
-- Data Management tab: browse everything stored in Milvus and Neo4j
-- Upload utilities to load your own data into both databases (`utils/`)
+- Data Management tab: browse everything stored in Milvus and Neo4j, and review/apply/reject proposed agent actions
+- Per-request model picker (provider + model)
+
+API-only (no UI for these yet — use `/docs`, `curl`, or the `utils/` CLI):
+
+- JWT auth (`/api/auth/register`, `/login`, `/me`) — the UI doesn't have a login screen; chat/upload work logged-out too
+- Agent actions: the answerer can *propose* a data edit (vector chunk text, graph node property); nothing is written until a human reviews and applies it (`GET /api/actions`, `POST /api/actions/{id}/apply`/`reject`) — listing/reviewing is in the Data Management tab, but applying/rejecting is API-only today
+- File upload ingestion (`POST /api/files`: Excel, CSV, Markdown, PDF, via LlamaIndex) and the `utils/` bulk-upload CLI
+- Per-stage cost accounting, pre-flight budget checks, and session/batch spend circuit breakers (`src/pipeline/pricing.py`) — visible in `ChatResponse.trace[]`/`total_cost_usd`, not rendered in the UI
+- Evals and release gates (`make eval`, `make judge`, `make deepeval`, `make gates`, `make alerts`) — see [Production readiness](#production-readiness)
+- Local-only Langfuse tracing (never Langfuse Cloud)
+
+Underlying design (not user-facing, but worth knowing about):
+
 - Hybrid retrieval: semantic search (Milvus) and Cypher queries (Neo4j) run in parallel
 - Input guardrails and regex-based PII masking, always on, before anything reaches an LLM
 - Agentic RAG (DeepAgents) with Pydantic-validated structured output
-- Agent actions: the answerer can *propose* a data edit (vector chunk text, graph node property); nothing is written until a human reviews and applies it (`GET /api/actions`, `POST /api/actions/{id}/apply`/`reject`)
-- Per-stage cost accounting and a pre-flight budget check before the answerer call, plus session- and batch-job-level spend circuit breakers (`src/pipeline/pricing.py`)
-- LLM-as-a-judge script (`evals/judge.py`) grading real pipeline answers against a reference
-- Upload Excel, CSV, Markdown and PDF files, ingested through LlamaIndex
-- JWT auth (register/login/me), Postgres-backed chat history, audit log and ingestion job tracking
 - Redis response caching and Kafka event publishing, both best-effort — never block or fail a request
-- Local-only Langfuse tracing (never Langfuse Cloud) and evals (`make eval`, `make judge`, `make deepeval`, `make gates`, `make alerts`)
 - Planned: analysis/plotting agent actions and the richer trace field set — see [Production readiness](#production-readiness)
 
 ## Architecture
@@ -74,9 +111,37 @@ flowchart LR
 | Evals             | DeepEval                        |
 | Packaging         | uv (Python), npm (frontend)     |
 
-## Quickstart
+### Scope vs. a full agent platform
 
-No Docker. You need [uv](https://docs.astral.sh/uv/) (installs Python 3.12 itself), Node 18+, and [Neo4j](https://neo4j.com/), [PostgreSQL](https://www.postgresql.org/), [Redis](https://redis.io/) and [Kafka](https://kafka.apache.org/) installed locally — all via Homebrew, all run as background services, the same pattern throughout this project. Milvus runs embedded (Milvus Lite) from a local file, so there is nothing to install for it.
+This project implements the data/retrieval and LLOps layers of a production agent stack in full
+(real vector+graph RAG, evals, tracing, guardrails, cost/latency controls — see
+[Production readiness](#production-readiness)); a few layers a fuller platform would have are
+deliberately out of scope here. One-liners on each, and how it currently works / how you'd wire
+it in if needed:
+
+- **Multi-agent orchestration (Planner/Research/Action agents).** Now: one agent (DeepAgents
+  answerer) with two narrow write-proposal tools — see [Agent actions](#agent-actions). To add:
+  split `src/pipeline/answering/agent.py` into a LangGraph graph with separate planner/
+  research/action nodes and route between them instead of one agent loop.
+- **MCP tools for SQL/APIs/SaaS.** Now: no MCP server; the two agent tools are plain LangChain
+  functions scoped to proposing Milvus/Neo4j edits, not external systems. To add: stand up an MCP
+  server exposing the SQL/API/SaaS calls you want, then bind it to the DeepAgents answerer the
+  same way `src/pipeline/answering/tools.py`'s tools are bound today.
+- **API gateway with Redis-backed session state.** Now: FastAPI *is* the gateway (no separate
+  gateway service); Redis only caches `/api/chat` responses — auth is stateless JWT, so there's no
+  session state to store. To add: if you need server-side sessions, add a Redis-backed session
+  store keyed by JWT `jti`, separate from the existing response-cache keys in
+  `src/clients/redis.py`.
+- **VLM / multimodal input.** Now: text-only, no image/vision model support anywhere. To add: a
+  new `llm_provider`-style branch in `src/pipeline/answering/agent.py`'s `_build_model`, plus an
+  ingestion path for image chunks alongside the existing md/csv/xlsx/pdf loaders.
+
+## Use real retrieval and LLMs
+
+Everything in [Run it in 5 minutes](#run-it-in-5-minutes-no-services-required) used stubs. This
+section swaps in real Milvus/Neo4j retrieval and a real LLM — same routes, same UI, just backed
+by real infrastructure instead of canned responses. No Docker: you need [uv](https://docs.astral.sh/uv/)
+(installs Python 3.12 itself), Node 18+, and [Neo4j](https://neo4j.com/), [PostgreSQL](https://www.postgresql.org/), [Redis](https://redis.io/) and [Kafka](https://kafka.apache.org/) installed locally — all via Homebrew, all run as background services, the same pattern throughout this project. Milvus runs embedded (Milvus Lite) from a local file, so there is nothing to install for it.
 
 ```bash
 brew install neo4j postgresql@16 redis kafka         # once; neo4j and kafka need a JDK, Homebrew pulls one in
@@ -338,7 +403,7 @@ Each pipeline stage is a Protocol in `pipeline/base.py`. `pipeline/factory.py` s
 - [X] Release gates: quality/latency/cost/citation thresholds, manually enforceable in CI — `evals/gates.py` (pure, unit-tested) + `evals/release_gates.py` (`make gates`) + `.github/workflows/release-gates.yml` (`workflow_dispatch`, needs a real `ANTHROPIC_API_KEY` secret this repo doesn't have — see the workflow file). HITL thresholds are intentionally never enforced: no production traffic exists to sample from.
 - [X] Alerting on the conditions in [Observability and audit trail](#observability-and-audit-trail) — `evals/alerts.py` (pure, unit-tested) + `evals/check_alerts.py` (`make alerts`), reading real `chat_audit_log` rows. 4 of 6 conditions are genuinely computable today; 2 aren't (see below) — this is a manual/cron script, not a real alerting pipeline (no Prometheus/Alertmanager/paging integration exists in this project).
 - [X] Agent functionality for edit/update — propose-then-human-apply, opt-in per request (`allow_actions`) — see [Agent actions](#agent-actions)
-- [ ] Demo GIF
+- [X] Demo GIF — `docs/demo.gif`, recorded against the real UI (stub-mode chat, Data Management against live Milvus/Neo4j)
 
 ## License
 
